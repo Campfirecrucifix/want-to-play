@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#171a21">
+<title>Want to Play</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="top">
+    <h1>Want to Play</h1>
+    <button id="btnRefresh" title="Refresh from Steam">⟳</button>
+    <button id="btnSettings" title="Settings">⚙</button>
+  </div>
+  <nav id="tabs"></nav>
+  <div class="bar">
+    <input id="q" type="search" placeholder="Search name, theme, notes…">
+    <select id="sort">
+      <option value="status">Sort: Status</option>
+      <option value="release">Sort: Release date</option>
+      <option value="added">Sort: Recently added</option>
+      <option value="name">Sort: Name</option>
+    </select>
+  </div>
+  <div class="chips" id="filters"></div>
+</header>
+<div id="banner"></div>
+<main id="list"></main>
+<button id="fab" title="Add game">＋</button>
+<div id="sheet" class="hidden"><div class="sheet-body" id="sheetBody"></div></div>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

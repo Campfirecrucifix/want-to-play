@@ -1,0 +1,411 @@
+'use strict';
+// ===== constants =====
+const REPO = 'Campfirecrucifix/want-to-play';
+const KEY = 'wtp.v1', SET = 'wtp.settings', TAGS = 'wtp.tags';
+const GIST_FILE = 'want-to-play.json';
+const NATIVE = !!window.WTP;
+const LISTS = { want: 'Want to Play', her: 'For Her', played: 'Played', nottaste: 'Not My Taste' };
+const MODES = ['Single', 'Co-op', 'Online Co-op', 'Local Co-op', 'PvP', 'MMO', 'VR', 'Multiplayer'];
+const STATUS = { // order = sort order for "Sort: Status"
+  new: { t: 'Just released', c: 'new', o: 0 }, soon: { t: 'Coming soon', c: 'soon', o: 1 },
+  ea: { t: 'Early Access', c: 'ea', o: 2 }, tba: { t: 'Unreleased', c: 'tba', o: 3 },
+  out: { t: 'Released', c: 'out', o: 4 }, none: { t: 'Not on Steam', c: 'none', o: 5 }, unk: { t: 'Not loaded', c: 'none', o: 6 },
+};
+const CAT_MODE = { 2: 'Single', 9: 'Co-op', 38: 'Online Co-op', 39: 'Local Co-op', 24: 'Local Co-op', 48: 'Local Co-op',
+  49: 'PvP', 36: 'PvP', 37: 'PvP', 47: 'PvP', 20: 'MMO', 31: 'VR', 53: 'VR', 54: 'VR', 1: 'Multiplayer' };
+const DAY = 864e5;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const norm = s => String(s).toLowerCase().replace(/[™®©]/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, ' ').trim();
+const uid = () => 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+// ===== state =====
+let db = load(KEY, { games: [] });
+let settings = load(SET, { list: 'want', sort: 'status', filters: [], token: '', gistId: '' });
+let tagNames = load(TAGS, { at: 0, map: {} });
+function load(k, d) { try { return Object.assign(d, JSON.parse(localStorage[k])); } catch { return d; } }
+function saveSettings() { localStorage[SET] = JSON.stringify(settings); }
+function save(push = true) {
+  localStorage[KEY] = JSON.stringify(db);
+  pushWatch();
+  if (push) scheduleSync();
+}
+const live = () => db.games.filter(g => !g.deleted);
+function touch(g) { g.u = Date.now(); }
+
+// ===== networking =====
+// On Android the shell proxies ./__proxy?u=... natively (no CORS). In a desktop browser, use public CORS proxies.
+async function getJSON(url) {
+  const tries = NATIVE ? [`__proxy?u=${encodeURIComponent(url)}`]
+    : [url, `https://corsproxy.io/?url=${encodeURIComponent(url)}`, `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`];
+  let err;
+  for (const u of tries) {
+    try { const r = await fetch(u); if (r.ok) return await r.json(); err = new Error('HTTP ' + r.status); } catch (e) { err = e; }
+  }
+  throw err;
+}
+const steamItemsUrl = ids => 'https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json=' + encodeURIComponent(JSON.stringify({
+  ids: ids.map(appid => ({ appid })), context: { language: 'english', country_code: 'US' },
+  data_request: { include_release: true, include_basic_info: true, include_assets: true, include_tag_count: 12, include_reviews: true },
+}));
+const searchUrl = term => `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(term)}&cc=US&l=english`;
+
+async function ensureTags() {
+  if (Date.now() - tagNames.at < 7 * DAY && Object.keys(tagNames.map).length) return;
+  const d = await getJSON('https://api.steampowered.com/IStoreService/GetTagList/v1/?language=english');
+  tagNames = { at: Date.now(), map: Object.fromEntries(d.response.tags.map(t => [t.tagid, t.name])) };
+  localStorage[TAGS] = JSON.stringify(tagNames);
+}
+
+// Status key — MUST stay identical to statusKey() in android RefreshWorker.kt (used for change notifications)
+function statusKey(it) {
+  const r = it.release || {};
+  const soon = !!(r.is_coming_soon || it.is_coming_soon), ea = !!(r.is_early_access || it.is_early_access);
+  const demo = (it.related_items?.demo_appid || []).length > 0;
+  const base = soon ? `${ea ? 'soonEA' : 'soon'}|${r.coming_soon_display || ''}|${r.steam_release_date || ''}|${r.custom_release_date_message || ''}`
+    : ea ? 'ea' : 'out';
+  return base + (demo ? '|demo' : '');
+}
+
+function parseItem(it) {
+  const r = it.release || {};
+  const cats = [...(it.categories?.supported_player_categoryids || []), ...(it.categories?.feature_categoryids || [])];
+  let modes = [...new Set(cats.map(c => CAT_MODE[c]).filter(Boolean))];
+  if (modes.length > 1) modes = modes.filter(m => m !== 'Multiplayer');
+  const a = it.assets || {}, fmt = a.asset_url_format;
+  const img = fmt && (a.header || a.main_capsule) ? 'https://shared.akamai.steamstatic.com/store_item_assets/' + fmt.replace('${FILENAME}', a.header || a.main_capsule) : '';
+  const p = it.best_purchase_option || {};
+  const rev = it.reviews?.summary_filtered;
+  return {
+    name: it.name, img, key: statusKey(it),
+    soon: !!(r.is_coming_soon || it.is_coming_soon), ea: !!(r.is_early_access || it.is_early_access),
+    display: r.coming_soon_display || '', ts: (r.steam_release_date || 0) * 1000, msg: r.custom_release_date_message || '',
+    eaExit: (r.release_from_early_access_date || 0) * 1000,
+    demo: (it.related_items?.demo_appid || [])[0] || null,
+    modes, tags: (it.tagids || []).map(t => tagNames.map[t]).filter(Boolean).slice(0, 8),
+    price: it.is_free ? 'Free' : p.formatted_final_price || '', orig: p.formatted_original_price || '', disc: p.discount_pct || 0,
+    reviews: rev?.review_count ? `${rev.review_score_label} (${rev.percent_positive}%)` : '',
+    desc: it.basic_info?.short_description || '', dev: (it.basic_info?.developers || []).map(d => d.name).join(', '),
+    fetched: Date.now(),
+  };
+}
+
+let refreshing = false;
+async function refresh(force = false) {
+  if (refreshing) return; refreshing = true; $('#btnRefresh').classList.add('spin');
+  try {
+    await ensureTags();
+    const stale = live().filter(g => g.appid && (force || !g.steam || Date.now() - g.steam.fetched > 6 * 36e5));
+    const changes = [];
+    for (let i = 0; i < stale.length; i += 40) {
+      const chunk = stale.slice(i, i + 40);
+      const d = await getJSON(steamItemsUrl(chunk.map(g => g.appid)));
+      const byId = Object.fromEntries((d.response.store_items || []).filter(x => x.success === 1).map(x => [x.appid, x]));
+      for (const g of chunk) {
+        const it = byId[g.appid]; if (!it) continue;
+        const s = parseItem(it), old = g.steam;
+        if (old && old.key !== s.key) { g.change = { from: label(old), to: label(s), at: Date.now() }; changes.push(g); }
+        g.steam = s;
+      }
+    }
+    save(false); render(); syncSoon();
+    if (changes.length) toast(`${changes.length} game(s) changed status`);
+  } catch (e) { toast('Refresh failed: ' + e.message); }
+  finally { refreshing = false; $('#btnRefresh').classList.remove('spin'); }
+}
+
+function pushWatch() {
+  if (!NATIVE || !window.WTP.setWatch) return;
+  window.WTP.setWatch(JSON.stringify(live().filter(g => g.appid && g.steam && g.list !== 'played' && g.list !== 'nottaste')
+    .map(g => ({ appid: g.appid, name: g.name, key: g.steam.key }))));
+}
+
+// ===== status labels =====
+function kind(s) {
+  if (!s) return 'unk';
+  if (s.soon) return s.ts && s.display !== 'text_tba' ? 'soon' : 'tba';
+  if (s.ea) return 'ea';
+  if (s.ts && Date.now() - s.ts < 30 * DAY) return 'new';
+  return 'out';
+}
+const gkind = g => g.appid ? kind(g.steam) : 'none';
+function rel(ts) {
+  const d = Math.round((ts - Date.now()) / DAY);
+  if (d === 0) return 'today'; if (d === 1) return 'tomorrow'; if (d === -1) return 'yesterday';
+  const a = Math.abs(d), w = Math.round(a / 7), m = Math.round(a / 30);
+  const t = a < 14 ? `${a} days` : a < 60 ? `${w} weeks` : `${m} months`;
+  return d > 0 ? `in ${t}` : `${t} ago`;
+}
+const fmtDate = ts => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+function label(s) {
+  const k = kind(s), pre = s?.soon && s.ea ? 'Early Access ' : '';
+  switch (k) {
+    case 'soon': {
+      const dt = new Date(s.ts);
+      if (s.display === 'date_month') return `${pre}${dt.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`;
+      if (s.display === 'date_quarter') return `${pre}Q${Math.floor(dt.getMonth() / 3) + 1} ${dt.getFullYear()}`;
+      if (s.display === 'date_year') return `${pre}${dt.getFullYear()}`;
+      return `${pre}${rel(s.ts)} · ${fmtDate(s.ts)}`;
+    }
+    case 'tba': return pre + (s.msg && !/^to be announced$/i.test(s.msg) ? s.msg : 'TBA');
+    case 'ea': return 'Early Access';
+    case 'new': return `Released ${rel(s.ts)}`;
+    case 'out': return s.ts ? `Released ${new Date(s.ts).getFullYear()}` : 'Released';
+    default: return STATUS[k].t;
+  }
+}
+
+// ===== rendering =====
+function render() {
+  renderTabs(); renderFilters(); renderBanner();
+  const q = norm($('#q').value);
+  let games = live().filter(g => g.list === settings.list);
+  if (q) games = games.filter(g => norm([g.name, g.notes, ...(g.steam?.tags || []), ...modesOf(g), g.steam?.dev].join(' ')).includes(q));
+  for (const f of settings.filters) {
+    const [t, v] = f.split(':');
+    games = games.filter(g => t === 's' ? gkind(g) === v : t === 'demo' ? g.steam?.demo : modesOf(g).includes(v));
+  }
+  const by = {
+    name: (a, b) => a.name.localeCompare(b.name),
+    added: (a, b) => b.added - a.added,
+    release: (a, b) => (b.steam?.ts || 0) - (a.steam?.ts || 0),
+    status: (a, b) => STATUS[gkind(a)].o - STATUS[gkind(b)].o || (gkind(a) === 'soon' ? (a.steam.ts - b.steam.ts) : (b.steam?.ts || 0) - (a.steam?.ts || 0)) || a.name.localeCompare(b.name),
+  }[settings.sort];
+  games.sort(by);
+  $('#list').innerHTML = games.length ? games.map(card).join('') : `<p class="empty">No games here. Tap ＋ to add one.</p>`;
+}
+function modesOf(g) { return g.myModes?.length ? g.myModes : (g.steam?.modes || []); }
+function card(g) {
+  const s = g.steam, k = gkind(g);
+  return `<article class="card" data-id="${g.id}">
+    ${s?.img ? `<img src="${esc(s.img)}" loading="lazy" alt="">` : `<div class="noimg">${esc(g.name[0] || '?')}</div>`}
+    <div class="info">
+      <h3>${esc(g.name)}</h3>
+      <div class="row"><span class="st ${STATUS[k].c}">${esc(g.appid ? label(s) : STATUS.none.t)}</span>
+        ${s?.demo ? '<span class="st demo">Demo</span>' : ''}
+        ${s?.disc ? `<span class="st sale">-${s.disc}%</span>` : ''}</div>
+      <div class="row modes">${modesOf(g).map(m => `<span class="mode">${esc(m)}</span>`).join('')}</div>
+      ${s?.tags?.length ? `<div class="tags">${esc(s.tags.slice(0, 5).join(' · '))}</div>` : ''}
+      ${g.notes ? `<div class="notes">${esc(g.notes)}</div>` : ''}
+    </div></article>`;
+}
+function renderTabs() {
+  const counts = {}; for (const g of live()) counts[g.list] = (counts[g.list] || 0) + 1;
+  $('#tabs').innerHTML = Object.entries(LISTS).map(([k, t]) =>
+    `<button data-list="${k}" class="${settings.list === k ? 'on' : ''}">${t} <small>${counts[k] || 0}</small></button>`).join('');
+}
+function renderFilters() {
+  const chips = [...['soon', 'tba', 'ea', 'new', 'out', 'none'].map(k => [`s:${k}`, STATUS[k].t]), ['demo', 'Has demo'],
+    ...MODES.slice(0, 6).map(m => [`m:${m}`, m])];
+  $('#filters').innerHTML = chips.map(([v, t]) => `<button data-f="${v}" class="${settings.filters.includes(v) ? 'on' : ''}">${t}</button>`).join('');
+}
+function renderBanner() {
+  const recent = live().filter(g => g.change && Date.now() - g.change.at < 14 * DAY).sort((a, b) => b.change.at - a.change.at);
+  let h = '';
+  if (shellUpdate) h += `<div class="upd">App shell update available (v${shellUpdate.v}). <a href="#" data-apk="${esc(shellUpdate.url)}">Download</a></div>`;
+  if (recent.length) h += `<details class="changes"><summary>🔔 ${recent.length} status change(s) in the last 2 weeks</summary>${recent.map(g =>
+    `<div data-id="${g.id}" class="chg"><b>${esc(g.name)}</b>: ${esc(g.change.from)} → <b>${esc(g.change.to)}</b> <small>${rel(g.change.at)}</small></div>`).join('')}</details>`;
+  $('#banner').innerHTML = h;
+}
+
+// ===== sheets (detail / add / settings) =====
+function openSheet(html) { $('#sheetBody').innerHTML = html; $('#sheet').classList.remove('hidden'); history.pushState({ sheet: 1 }, ''); }
+function closeSheet(fromPop) { if ($('#sheet').classList.contains('hidden')) return; $('#sheet').classList.add('hidden'); if (!fromPop) history.back(); }
+window.addEventListener('popstate', () => closeSheet(true));
+$('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
+
+function showGame(id) {
+  const g = db.games.find(x => x.id === id); if (!g) return;
+  const s = g.steam, k = gkind(g);
+  openSheet(`
+    ${s?.img ? `<img class="hero" src="${esc(s.img)}" alt="">` : ''}
+    <h2>${esc(g.name)}</h2>
+    <div class="row"><span class="st ${STATUS[k].c}">${esc(g.appid ? label(s) : STATUS.none.t)}</span>
+      ${s?.price ? `<span class="price">${s.disc ? `<s>${esc(s.orig)}</s> ` : ''}${esc(s.price)}</span>` : ''}</div>
+    ${s?.reviews ? `<p class="muted">${esc(s.reviews)}${s.dev ? ' · ' + esc(s.dev) : ''}</p>` : ''}
+    ${s?.desc ? `<p>${esc(s.desc)}</p>` : ''}
+    ${s?.tags?.length ? `<p class="tags">${esc(s.tags.join(' · '))}</p>` : ''}
+    ${s?.modes?.length ? `<p class="muted">Steam lists: ${esc(s.modes.join(', '))}</p>` : ''}
+    <label>List</label>
+    <select id="eList">${Object.entries(LISTS).map(([k, t]) => `<option value="${k}" ${g.list === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
+    <label>My modes <small>(overrides Steam's)</small></label>
+    <div class="chips" id="eModes">${MODES.map(m => `<button data-m="${m}" class="${g.myModes?.includes(m) ? 'on' : ''}">${m}</button>`).join('')}</div>
+    <label>Notes</label><textarea id="eNotes" rows="3">${esc(g.notes)}</textarea>
+    <label>Steam app ID or store URL ${g.appid ? '' : '<small>(link this game to Steam)</small>'}</label>
+    <input id="eApp" value="${g.appid || ''}" inputmode="numeric">
+    <div class="btns">
+      <button class="pri" id="eSave">Save</button>
+      ${g.appid ? `<button data-open="https://store.steampowered.com/app/${g.appid}">Steam page</button>` : ''}
+      ${s?.demo ? `<button data-open="https://store.steampowered.com/app/${s.demo}">Demo page</button>` : ''}
+      <button class="del" id="eDel">Delete</button>
+    </div>`);
+  $('#eModes').onclick = e => { const b = e.target.closest('button'); if (b) b.classList.toggle('on'); };
+  $('#eSave').onclick = () => {
+    const app = parseAppId($('#eApp').value);
+    g.list = $('#eList').value; g.notes = $('#eNotes').value.trim();
+    g.myModes = [...document.querySelectorAll('#eModes .on')].map(b => b.dataset.m);
+    if (app !== g.appid) { g.appid = app; g.steam = null; g.change = null; }
+    touch(g); save(); render(); closeSheet(); if (app && !g.steam) refresh();
+  };
+  $('#eDel').onclick = () => { if (confirm(`Delete ${g.name}?`)) { Object.keys(g).forEach(k => k !== 'id' && delete g[k]); g.deleted = true; touch(g); save(); render(); closeSheet(); } };
+}
+function parseAppId(v) { v = String(v).trim(); const m = v.match(/app\/(\d+)/) || v.match(/^(\d+)$/); return m ? +m[1] : null; }
+
+function showAdd() {
+  openSheet(`<h2>Add game</h2>
+    <input id="aq" type="search" placeholder="Game name, Steam ID, or store URL" autofocus>
+    <label>Add to</label>
+    <select id="aList">${Object.entries(LISTS).map(([k, t]) => `<option value="${k}" ${settings.list === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
+    <div id="ares"></div>`);
+  let timer;
+  $('#aq').oninput = () => { clearTimeout(timer); timer = setTimeout(doSearch, 400); };
+  $('#aq').onkeydown = e => { if (e.key === 'Enter') { clearTimeout(timer); doSearch(); } };
+  setTimeout(() => $('#aq').focus(), 50);
+  async function doSearch() {
+    const v = $('#aq').value.trim(); if (!v) return ($('#ares').innerHTML = '');
+    const id = parseAppId(v);
+    $('#ares').innerHTML = '<p class="muted">Searching…</p>';
+    try {
+      let items;
+      if (id) {
+        const d = await getJSON(steamItemsUrl([id]));
+        items = (d.response.store_items || []).filter(x => x.success === 1).map(x => ({ id: x.appid, name: x.name }));
+      } else items = (await getJSON(searchUrl(v))).items || [];
+      $('#ares').innerHTML = items.map(i => {
+        const have = live().find(g => g.appid === i.id);
+        return `<div class="res" data-add="${i.id}" data-name="${esc(i.name)}">
+          <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${i.id}/capsule_231x87.jpg" alt="" onerror="this.style.visibility='hidden'">
+          <span>${esc(i.name)}</span>${have ? `<small>in ${LISTS[have.list]}</small>` : ''}</div>`;
+      }).join('') + `<div class="res manual" data-add="" data-name="${esc(v)}"><span>＋ Add “${esc(v)}” without Steam link</span></div>`;
+    } catch (e) { $('#ares').innerHTML = `<p class="muted">Search failed (${esc(e.message)}).</p><div class="res manual" data-add="" data-name="${esc(v)}"><span>＋ Add “${esc(v)}” anyway</span></div>`; }
+  }
+  $('#ares').onclick = e => {
+    const r = e.target.closest('[data-add]'); if (!r) return;
+    const g = { id: uid(), appid: r.dataset.add ? +r.dataset.add : null, name: r.dataset.name, list: $('#aList').value, notes: '', myModes: [], added: Date.now() };
+    touch(g); db.games.push(g); save(); settings.list = g.list; saveSettings(); render(); closeSheet(); toast(`Added ${g.name}`);
+    if (g.appid) refresh();
+  };
+}
+
+function showSettings() {
+  openSheet(`<h2>Settings</h2>
+    <h3>Sync across devices</h3>
+    <p class="muted">Your list is stored on this device. To sync with another device (or a PC browser), paste a GitHub token with only the <b>gist</b> permission. Your list is saved in a secret gist on your account.</p>
+    <input id="sTok" type="password" placeholder="GitHub token (ghp_… or github_pat_…)" value="${esc(settings.token)}">
+    <div class="btns"><button class="pri" id="sSync">Save & sync now</button>
+      <button data-open="https://github.com/settings/tokens/new?scopes=gist&description=Want%20to%20Play%20sync">Create token</button></div>
+    <p class="muted">${settings.gistId ? `Synced gist: ${esc(settings.gistId)}${settings.lastSync ? ' · last sync ' + rel(settings.lastSync) : ''}` : 'Not syncing.'}</p>
+    <h3>Import / export</h3>
+    <input id="sUrl" placeholder="Import from URL (JSON)">
+    <div class="btns"><button id="sImp">Import URL</button><button id="sExp">Export / backup</button></div>
+    <textarea id="sJson" rows="3" placeholder="…or paste exported JSON here"></textarea>
+    <div class="btns"><button id="sPaste">Import pasted JSON</button></div>
+    <h3>Data</h3>
+    <div class="btns"><button id="sForce">Re-fetch all from Steam</button></div>
+    <p class="muted">Web app auto-updates. Shell v${NATIVE && window.WTP.shellVersion ? window.WTP.shellVersion() : '-'} · ${live().length} games ·
+      <a href="#" data-open="https://github.com/${REPO}/releases/latest">releases</a></p>`);
+  $('#sSync').onclick = async () => { settings.token = $('#sTok').value.trim(); saveSettings(); await sync(true); closeSheet(); };
+  $('#sImp').onclick = async () => { try { importData(await (await fetch($('#sUrl').value.trim())).json()); closeSheet(); } catch (e) { toast('Import failed: ' + e.message); } };
+  $('#sPaste').onclick = () => { try { importData(JSON.parse($('#sJson').value)); closeSheet(); } catch (e) { toast('Bad JSON: ' + e.message); } };
+  $('#sExp').onclick = () => {
+    const json = JSON.stringify({ version: 1, games: db.games }, null, 0);
+    if (NATIVE && window.WTP.share) window.WTP.share(json);
+    else navigator.clipboard.writeText(json).then(() => toast('Copied to clipboard'));
+  };
+  $('#sForce').onclick = () => { closeSheet(); refresh(true); };
+}
+
+function importData(d) {
+  const games = Array.isArray(d) ? d : d.games || [];
+  let n = 0;
+  for (const g of games) {
+    if (g.deleted || !g.name) continue;
+    if (live().some(x => x.id === g.id || (g.appid && x.appid === g.appid) || (!g.appid && norm(x.name) === norm(g.name)))) continue;
+    db.games.push({ ...g, id: g.id || uid(), myModes: (g.myModes || []).map(normMode).filter(Boolean), added: g.added || Date.now(), u: g.u || Date.now() }); n++;
+  }
+  save(); render(); toast(`Imported ${n} game(s)`); refresh();
+}
+function normMode(m) {
+  const k = norm(m);
+  return { single: 'Single', 'co op': 'Co-op', coop: 'Co-op', 'online co op': 'Online Co-op', 'split screen': 'Local Co-op', 'local co op': 'Local Co-op',
+    pvp: 'PvP', mmo: 'MMO', vr: 'VR', multiplayer: 'Multiplayer' }[k] || MODES.find(x => norm(x) === k) || null;
+}
+
+// ===== gist sync =====
+const gh = (path, opt = {}) => fetch('https://api.github.com' + path, { ...opt,
+  headers: { Authorization: 'Bearer ' + settings.token, Accept: 'application/vnd.github+json', ...(opt.body ? { 'Content-Type': 'application/json' } : {}) } })
+  .then(async r => { if (!r.ok) throw new Error(`GitHub ${r.status}`); return r.status === 204 ? null : r.json(); });
+let syncTimer;
+function scheduleSync() { if (settings.token) { clearTimeout(syncTimer); syncTimer = setTimeout(() => sync(), 3000); } }
+const syncSoon = scheduleSync;
+async function sync(loud) {
+  if (!settings.token) return;
+  try {
+    if (!settings.gistId) {
+      const list = await gh('/gists?per_page=100');
+      settings.gistId = list.find(x => x.files[GIST_FILE])?.id || '';
+    }
+    let remote = [];
+    if (settings.gistId) {
+      const gist = await gh('/gists/' + settings.gistId);
+      const f = gist.files[GIST_FILE];
+      const txt = f.truncated ? await (await fetch(f.raw_url)).text() : f.content;
+      remote = JSON.parse(txt).games || [];
+    }
+    // merge: newest edit (u) wins per game id; ties -> newer steam data
+    const map = new Map(db.games.map(g => [g.id, g]));
+    for (const r of remote) {
+      const l = map.get(r.id);
+      if (!l || r.u > l.u || (r.u === l.u && (r.steam?.fetched || 0) > (l.steam?.fetched || 0))) map.set(r.id, r);
+    }
+    db.games = [...map.values()];
+    for (const g of db.games) if (g.myModes) g.myModes = g.myModes.map(m => normMode(m) || m);
+    const body = JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify({ version: 1, games: db.games }) } },
+      ...(settings.gistId ? {} : { description: 'Want to Play list (app data)', public: false }) });
+    const res = await gh(settings.gistId ? '/gists/' + settings.gistId : '/gists', { method: settings.gistId ? 'PATCH' : 'POST', body });
+    settings.gistId = res.id; settings.lastSync = Date.now(); saveSettings();
+    save(false); render();
+    if (loud) toast('Synced'); if (live().some(g => g.appid && !g.steam)) refresh();
+  } catch (e) { toast('Sync failed: ' + e.message); }
+}
+
+// ===== shell self-update check =====
+let shellUpdate = null;
+async function checkShell() {
+  if (!NATIVE || !window.WTP.shellVersion) return;
+  try {
+    const r = await (await fetch(`https://api.github.com/repos/${REPO}/releases/latest`)).json();
+    const v = +String(r.tag_name).replace(/\D/g, ''), asset = r.assets?.find(a => a.name.endsWith('.apk'));
+    if (v > window.WTP.shellVersion() && asset) { shellUpdate = { v, url: asset.browser_download_url }; renderBanner(); }
+  } catch { }
+}
+
+// ===== misc =====
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 3000); }
+function openExternal(url) { NATIVE && window.WTP.openExternal ? window.WTP.openExternal(url) : window.open(url, '_blank'); }
+
+document.addEventListener('click', e => {
+  const t = e.target;
+  const open = t.closest('[data-open]'); if (open) { e.preventDefault(); return openExternal(open.dataset.open); }
+  const apk = t.closest('[data-apk]'); if (apk) { e.preventDefault(); return openExternal(apk.dataset.apk); }
+  const tab = t.closest('[data-list]'); if (tab) { settings.list = tab.dataset.list; saveSettings(); return render(); }
+  const f = t.closest('#filters [data-f]');
+  if (f) { const v = f.dataset.f; settings.filters = settings.filters.includes(v) ? settings.filters.filter(x => x !== v) : [...settings.filters, v]; saveSettings(); return render(); }
+  const c = t.closest('#list .card, #banner .chg'); if (c) return showGame(c.dataset.id);
+});
+$('#q').oninput = render;
+$('#sort').value = settings.sort;
+$('#sort').onchange = () => { settings.sort = $('#sort').value; saveSettings(); render(); };
+$('#fab').onclick = showAdd;
+$('#btnSettings').onclick = showSettings;
+$('#btnRefresh').onclick = () => refresh(true);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+
+// first run: offer import if empty and a #import=URL hash is given
+(async () => {
+  const m = location.hash.match(/import=(.+)/);
+  if (m) { history.replaceState(null, '', location.pathname); try { importData(await (await fetch(decodeURIComponent(m[1]))).json()); } catch (e) { toast('Import failed'); } }
+  render();
+  if (settings.token) await sync();
+  refresh(); checkShell();
+})();
