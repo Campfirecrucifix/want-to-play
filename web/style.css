@@ -1,7 +1,7 @@
 :root { --bg:#171a21; --card:#1f2430; --card2:#2a3142; --fg:#e6e9ef; --mut:#8f98a8; --acc:#66c0f4; }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.4 system-ui, -apple-system, Roboto, sans-serif; padding-bottom:90px; }
-header { position:sticky; top:0; z-index:5; background:var(--bg); padding:calc(env(safe-area-inset-top) + 8px) 10px 6px; box-shadow:0 2px 8px #0008; }
+header { position:sticky; top:0; z-index:5; background:var(--bg); padding:8px 10px 6px; box-shadow:0 2px 8px #0008; }
 .top { display:flex; align-items:center; gap:8px; }
 h1 { font-size:20px; margin:0; flex:1; }
 .top button { background:none; border:0; color:var(--fg); font-size:22px; padding:4px 8px; }
@@ -38,10 +38,10 @@ h3 { margin:0 0 3px; font-size:15px; }
 .tags { font-size:12px; color:var(--mut); margin-top:3px; }
 .notes { font-size:12px; color:#d6c88a; margin-top:3px; font-style:italic; }
 .empty { color:var(--mut); text-align:center; grid-column:1/-1; margin-top:40px; }
-#fab { position:fixed; right:18px; bottom:calc(env(safe-area-inset-bottom) + 18px); width:58px; height:58px; border-radius:50%; border:0; background:var(--acc); color:#000; font-size:30px; box-shadow:0 4px 12px #000a; z-index:6; }
+#fab { position:fixed; right:18px; bottom:18px; width:58px; height:58px; border-radius:50%; border:0; background:var(--acc); color:#000; font-size:30px; box-shadow:0 4px 12px #000a; z-index:6; }
 #sheet { position:fixed; inset:0; background:#000a; z-index:10; display:flex; align-items:flex-end; justify-content:center; }
 #sheet.hidden { display:none; }
-.sheet-body { background:var(--bg); width:100%; max-width:640px; max-height:90vh; overflow-y:auto; border-radius:14px 14px 0 0; padding:16px 16px calc(env(safe-area-inset-bottom) + 20px); }
+.sheet-body { background:var(--bg); width:100%; max-width:640px; max-height:90vh; overflow-y:auto; border-radius:14px 14px 0 0; padding:16px 16px 20px; }
 .sheet-body h2 { margin:4px 0 8px; }
 .sheet-body h3 { margin:18px 0 4px; font-size:15px; }
 .sheet-body label { display:block; margin:12px 0 4px; color:var(--mut); font-size:13px; }

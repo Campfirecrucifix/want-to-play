@@ -11,6 +11,7 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowInsets
 import android.webkit.*
 import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
@@ -23,9 +24,13 @@ class MainActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
-        window.statusBarColor = Color.parseColor("#171A21")
         web = WebView(this)
+        web.setBackgroundColor(Color.parseColor("#171A21"))
         setContentView(web)
+        if (Build.VERSION.SDK_INT >= 30) web.setOnApplyWindowInsetsListener { v, ins ->
+            val b = ins.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
+            v.setPadding(b.left, b.top, b.right, b.bottom); ins
+        }
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
