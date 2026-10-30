@@ -34,15 +34,12 @@ const live = () => db.games.filter(g => !g.deleted);
 function touch(g) { g.u = Date.now(); }
 
 // ===== networking =====
-// On Android the shell proxies ./__proxy?u=... natively (no CORS). In a desktop browser, use public CORS proxies.
+// On Android the shell proxies ./__proxy?u=... natively (no CORS). Steam has no CORS, so a desktop browser can't refresh;
+// it shows the Steam data synced from the phone via the gist instead.
 async function getJSON(url) {
-  const tries = NATIVE ? [`__proxy?u=${encodeURIComponent(url)}`]
-    : [url, `https://corsproxy.io/?url=${encodeURIComponent(url)}`, `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`];
-  let err;
-  for (const u of tries) {
-    try { const r = await fetch(u); if (r.ok) return await r.json(); err = new Error('HTTP ' + r.status); } catch (e) { err = e; }
-  }
-  throw err;
+  const r = await fetch(NATIVE ? `__proxy?u=${encodeURIComponent(url)}` : url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
 }
 const steamItemsUrl = ids => 'https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json=' + encodeURIComponent(JSON.stringify({
   ids: ids.map(appid => ({ appid })), context: { language: 'english', country_code: 'US' },
@@ -92,7 +89,7 @@ function parseItem(it) {
 
 let refreshing = false;
 async function refresh(force = false) {
-  if (refreshing) return; refreshing = true; $('#btnRefresh').classList.add('spin');
+  if (refreshing || !NATIVE) return; refreshing = true; $('#btnRefresh').classList.add('spin');
   try {
     await ensureTags();
     const stale = live().filter(g => g.appid && (force || !g.steam || Date.now() - g.steam.fetched > 6 * 36e5));
@@ -106,6 +103,7 @@ async function refresh(force = false) {
         const s = parseItem(it), old = g.steam;
         if (old && old.key !== s.key) { g.change = { from: label(old), to: label(s), at: Date.now() }; changes.push(g); }
         g.steam = s;
+        if (/^Steam app \d+$/.test(g.name)) g.name = s.name;
       }
     }
     save(false); render(); syncSoon();
@@ -277,7 +275,11 @@ function showAdd() {
           <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${i.id}/capsule_231x87.jpg" alt="" onerror="this.style.visibility='hidden'">
           <span>${esc(i.name)}</span>${have ? `<small>in ${LISTS[have.list]}</small>` : ''}</div>`;
       }).join('') + `<div class="res manual" data-add="" data-name="${esc(v)}"><span>＋ Add “${esc(v)}” without Steam link</span></div>`;
-    } catch (e) { $('#ares').innerHTML = `<p class="muted">Search failed (${esc(e.message)}).</p><div class="res manual" data-add="" data-name="${esc(v)}"><span>＋ Add “${esc(v)}” anyway</span></div>`; }
+    } catch (e) {
+      $('#ares').innerHTML = (id ? `<div class="res" data-add="${id}" data-name="Steam app ${id}"><span>＋ Add Steam app ${id} <small>(details load on your phone)</small></span></div>`
+        : `<p class="muted">${NATIVE ? `Search failed (${esc(e.message)}).` : 'Name search only works in the Android app. Paste a Steam store URL or app ID instead.'}</p>`)
+        + `<div class="res manual" data-add="" data-name="${esc(v)}"><span>＋ Add “${esc(v)}” without Steam link</span></div>`;
+    }
   }
   $('#ares').onclick = e => {
     const r = e.target.closest('[data-add]'); if (!r) return;
@@ -398,8 +400,8 @@ $('#sort').value = settings.sort;
 $('#sort').onchange = () => { settings.sort = $('#sort').value; saveSettings(); render(); };
 $('#fab').onclick = showAdd;
 $('#btnSettings').onclick = showSettings;
-$('#btnRefresh').onclick = () => refresh(true);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+$('#btnRefresh').onclick = () => NATIVE ? refresh(true) : sync(true);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) NATIVE ? refresh() : sync(); });
 
 // first run: offer import if empty and a #import=URL hash is given
 (async () => {
