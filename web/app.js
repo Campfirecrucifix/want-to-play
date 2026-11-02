@@ -254,7 +254,11 @@ function showGame(id) {
     const app = parseAppId($('#eApp').value);
     g.list = $('#eList').value; g.notes = $('#eNotes').value.trim();
     g.myModes = [...document.querySelectorAll('#eModes .on')].map(b => b.dataset.m);
-    if (app !== g.appid) { g.appid = app; g.steam = null; g.change = null; }
+    if (app !== g.appid) {
+      const other = app && live().find(x => x !== g && x.appid === app);
+      if (other) return toast(`${other.name} already uses that Steam ID (${LISTS[other.list]}${other.excluded ? ', excluded' : ''})`);
+      g.appid = app; g.steam = null; g.change = null; g.patch = null; delete g.patchChecked;
+    }
     touch(g); save(); render(); closeSheet(); if (app && !g.steam) refresh();
   };
   if ($('#ePatch')) {
@@ -396,7 +400,7 @@ function showAdd() {
         const have = live().find(g => g.appid === i.id);
         return `<div class="res" data-add="${i.id}" data-name="${esc(i.name)}">
           <img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${i.id}/capsule_231x87.jpg" alt="" onerror="this.style.visibility='hidden'">
-          <span>${esc(i.name)}</span>${have ? `<small>in ${LISTS[have.list]}</small>` : ''}</div>`;
+          <span>${esc(i.name)}</span>${have ? `<small>${have.excluded ? 'excluded' : 'in ' + LISTS[have.list]}</small>` : ''}</div>`;
       }).join('') + `<div class="res manual" data-add="" data-name="${esc(v)}"><span>＋ Add “${esc(v)}” without Steam link</span></div>`;
     } catch (e) {
       $('#ares').innerHTML = (id ? `<div class="res" data-add="${id}" data-name="Steam app ${id}"><span>＋ Add Steam app ${id} <small>(details load on your phone)</small></span></div>`
@@ -406,7 +410,14 @@ function showAdd() {
   }
   $('#ares').onclick = e => {
     const r = e.target.closest('[data-add]'); if (!r) return;
-    const g = { id: uid(), appid: r.dataset.add ? +r.dataset.add : null, name: r.dataset.name, list: $('#aList').value, notes: '', myModes: [], added: Date.now() };
+    const appid = r.dataset.add ? +r.dataset.add : null;
+    const have = live().find(x => appid ? x.appid === appid : !x.appid && norm(x.name) === norm(r.dataset.name));
+    if (have) {
+      if (have.excluded && confirm(`${have.name} is excluded. Track it again?`)) { setExcluded(have, false); have.list = $('#aList').value; touch(have); save(); render(); closeSheet(); if (appid && !have.steam) refresh(); }
+      else if (!have.excluded) toast(`${have.name} is already in ${LISTS[have.list]}`);
+      return;
+    }
+    const g = { id: uid(), appid, name: r.dataset.name, list: $('#aList').value, notes: '', myModes: [], added: Date.now() };
     touch(g); db.games.push(g); save(); settings.list = g.list; saveSettings(); render(); closeSheet(); toast(`Added ${g.name}`);
     if (g.appid) refresh();
   };
@@ -486,15 +497,54 @@ async function syncWishlist(loud = false) {
   const items = d.response?.items;
   if (!items) { const msg = 'Wishlist is empty or private (Steam → Edit Profile → Privacy → Game details: Public).'; if (loud) throw new Error(msg); return 0; }
   const known = new Set(db.games.filter(g => g.appid).map(g => g.appid)); // includes excluded & deleted
-  const add = items.filter(i => !known.has(i.appid)).sort((a, b) => a.priority - b.priority);
+  const fresh = items.filter(i => !known.has(i.appid)).sort((a, b) => a.priority - b.priority);
+  // real names up front, so wishlist games can be matched to games on your list that aren't linked to Steam yet
+  const names = {};
+  for (let k = 0; k < fresh.length; k += 40) {
+    try {
+      const r = await getJSON(steamItemsUrl(fresh.slice(k, k + 40).map(i => i.appid)));
+      for (const x of r.response.store_items || []) if (x.success === 1) names[x.appid] = x.name;
+    } catch { }
+  }
+  const sameName = (a, b) => { const x = norm(a).replace(/ (demo|playtest)$/, ''), y = norm(b).replace(/ (demo|playtest)$/, ''); return x.length > 2 && x === y; };
+  let linked = 0; const add = [];
+  for (const i of fresh) {
+    const nm = names[i.appid];
+    const match = nm && live().find(g => !g.appid && sameName(g.name, nm));
+    if (match) { match.appid = i.appid; match.steam = null; touch(match); linked++; continue; }
+    add.push(i);
+  }
   for (const i of add) {
-    const g = { id: uid(), appid: i.appid, name: `Steam app ${i.appid}`, list: w.list || 'want', notes: '', myModes: [], added: (i.date_added * 1000) || Date.now(), src: 'wishlist' };
+    const g = { id: uid(), appid: i.appid, name: names[i.appid] || `Steam app ${i.appid}`, list: w.list || 'want', notes: '', myModes: [], added: (i.date_added * 1000) || Date.now(), src: 'wishlist' };
     touch(g); db.games.push(g);
   }
+  dedupe();
   w.last = Date.now(); w.count = items.length; saveSettings();
-  if (add.length) { save(); render(); toast(`Added ${add.length} game(s) from your Steam wishlist`); }
+  if (add.length || linked) { save(); render(); toast([add.length && `Added ${add.length} game(s) from your Steam wishlist`, linked && `linked ${linked} existing game(s) to Steam`].filter(Boolean).join(', ')); }
   else if (loud) toast(`Wishlist synced — all ${items.length} games already tracked or excluded`);
-  return add.length;
+  return add.length + linked;
+}
+
+// One game per Steam app ID. Duplicates can appear when two devices add the same game before syncing, or an app ID is edited
+// onto a game that already exists. Deterministic (same keeper on every device) so synced copies converge.
+function dedupe() {
+  const groups = {};
+  for (const g of live()) if (g.appid) (groups[g.appid] = groups[g.appid] || []).push(g);
+  let n = 0;
+  for (const gs of Object.values(groups)) {
+    if (gs.length < 2) continue;
+    gs.sort((a, b) => (a.src === 'wishlist') - (b.src === 'wishlist') || (a.added || 0) - (b.added || 0) || (a.id < b.id ? -1 : 1));
+    const [keep, ...dups] = gs;
+    for (const d of dups) {
+      if (d.notes && !keep.notes?.includes(d.notes)) keep.notes = [keep.notes, d.notes].filter(Boolean).join('\n');
+      if (!keep.myModes?.length && d.myModes?.length) keep.myModes = d.myModes;
+      if (!keep.steam && d.steam) keep.steam = d.steam;
+      if (!keep.patch && d.patch) keep.patch = d.patch;
+      Object.keys(d).forEach(k => k !== 'id' && k !== 'appid' && delete d[k]); d.deleted = true; touch(d); n++;
+    }
+    touch(keep);
+  }
+  return n;
 }
 
 // ===== manage tracked / excluded games =====
@@ -538,7 +588,7 @@ function importData(d) {
     if (live().some(x => x.id === g.id || (g.appid && x.appid === g.appid) || (!g.appid && norm(x.name) === norm(g.name)))) continue;
     db.games.push({ ...g, id: g.id || uid(), myModes: (g.myModes || []).map(normMode).filter(Boolean), added: g.added || Date.now(), u: g.u || Date.now() }); n++;
   }
-  save(); render(); toast(`Imported ${n} game(s)`); refresh();
+  dedupe(); save(); render(); toast(`Imported ${n} game(s)`); refresh();
 }
 function normMode(m) {
   const k = norm(m);
@@ -577,6 +627,7 @@ async function sync(loud) {
       }
     }
     db.games = [...map.values()];
+    dedupe();
     for (const g of db.games) if (g.myModes) g.myModes = g.myModes.map(m => normMode(m) || m);
     const body = JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify({ version: 1, games: db.games }) } },
       ...(settings.gistId ? {} : { description: 'Want to Play list (app data)', public: false }) });
@@ -638,6 +689,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) NATI
 (async () => {
   const m = location.hash.match(/import=(.+)/);
   if (m) { history.replaceState(null, '', location.pathname); try { importData(await (await fetch(decodeURIComponent(m[1]))).json()); } catch (e) { toast('Import failed'); } }
+  if (dedupe()) save(false);
   render();
   if (settings.token) await sync();
   refresh(); checkShell();
