@@ -84,3 +84,10 @@ h3 { margin:0 0 3px; font-size:15px; }
 .cpatch b { color:#a4d007; font-weight:600; }
 .psum { display:block; font-size:12px; color:#b9c7d3; font-weight:normal; margin-top:3px; line-height:1.35; }
 .lastpatch { margin:10px 0 0; }
+.mrow { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 2px; border-bottom:1px solid #2a3442; }
+.mrow span { display:flex; flex-direction:column; min-width:0; }
+.mrow b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mrow small { color:#8f98a0; font-size:11px; }
+.mrow .tog { flex:none; border:0; border-radius:14px; padding:5px 12px; background:#2f6b2f; color:#d8f5c8; font:inherit; font-size:12px; }
+.mrow.off b { color:#8f98a0; text-decoration:line-through; }
+.mrow.off .tog { background:#5a2a2a; color:#f3c2c2; }

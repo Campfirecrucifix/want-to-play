@@ -33,6 +33,7 @@ function save(push = true) {
   if (push) scheduleSync();
 }
 const live = () => db.games.filter(g => !g.deleted);
+const tracked = () => live().filter(g => !g.excluded); // excluded = kept (so wishlist sync won't re-add) but hidden & never refreshed
 function touch(g) { g.u = Date.now(); }
 
 // ===== networking =====
@@ -94,7 +95,8 @@ async function refresh(force = false) {
   if (refreshing || !NATIVE) return; refreshing = true; $('#btnRefresh').classList.add('spin');
   try {
     await ensureTags();
-    const stale = live().filter(g => g.appid && (force || !g.steam || Date.now() - g.steam.fetched > 6 * 36e5));
+    if (settings.wishlist?.steamid && (force || Date.now() - (settings.wishlist.last || 0) > 12 * 36e5)) await syncWishlist().catch(() => { });
+    const stale = tracked().filter(g => g.appid && (force || !g.steam || Date.now() - g.steam.fetched > 6 * 36e5));
     const changes = [];
     for (let i = 0; i < stale.length; i += 40) {
       const chunk = stale.slice(i, i + 40);
@@ -117,7 +119,7 @@ async function refresh(force = false) {
 
 function pushWatch() {
   if (!NATIVE || !window.WTP.setWatch) return;
-  window.WTP.setWatch(JSON.stringify(live().filter(g => g.appid && g.steam && g.list !== 'played' && g.list !== 'nottaste')
+  window.WTP.setWatch(JSON.stringify(tracked().filter(g => g.appid && g.steam && g.list !== 'played' && g.list !== 'nottaste')
     .map(g => ({ appid: g.appid, name: g.name, key: g.steam.key }))));
 }
 
@@ -160,7 +162,7 @@ function label(s) {
 function render() {
   renderTabs(); renderFilters(); renderBanner();
   const q = norm($('#q').value);
-  let games = live().filter(g => g.list === settings.list);
+  let games = tracked().filter(g => g.list === settings.list);
   if (q) games = games.filter(g => norm([g.name, g.notes, ...(g.steam?.tags || []), ...modesOf(g), g.steam?.dev].join(' ')).includes(q));
   for (const f of settings.filters) {
     const [t, v] = f.split(':');
@@ -193,7 +195,7 @@ function card(g) {
     </div></article>`;
 }
 function renderTabs() {
-  const counts = {}; for (const g of live()) counts[g.list] = (counts[g.list] || 0) + 1;
+  const counts = {}; for (const g of tracked()) counts[g.list] = (counts[g.list] || 0) + 1;
   $('#tabs').innerHTML = Object.entries(LISTS).map(([k, t]) =>
     `<button data-list="${k}" class="${settings.list === k ? 'on' : ''}">${t} <small>${counts[k] || 0}</small></button>`).join('');
 }
@@ -203,7 +205,7 @@ function renderFilters() {
   $('#filters').innerHTML = chips.map(([v, t]) => `<button data-f="${v}" class="${settings.filters.includes(v) ? 'on' : ''}">${t}</button>`).join('');
 }
 function renderBanner() {
-  const recent = live().filter(g => g.change && Date.now() - g.change.at < 14 * DAY).sort((a, b) => b.change.at - a.change.at);
+  const recent = tracked().filter(g => g.change && Date.now() - g.change.at < 14 * DAY).sort((a, b) => b.change.at - a.change.at);
   let h = '';
   if (shellUpdate) h += `<div class="upd" id="updBox">App update v${shellUpdate.v} available. <button class="updbtn" data-apk="${esc(shellUpdate.url)}">${updState || 'Update'}</button></div>`;
   if (recent.length) h += `<details class="changes"><summary>🔔 ${recent.length} status change(s) in the last 2 weeks</summary>${recent.map(g =>
@@ -244,6 +246,7 @@ function showGame(id) {
       ${g.appid ? `<button data-open="https://store.steampowered.com/app/${g.appid}">Steam page</button>` : ''}
       ${s?.demo ? `<button data-open="https://store.steampowered.com/app/${s.demo}">Demo page</button>` : ''}
       ${g.appid ? `<button id="ePatch">📝 Patches & news</button>` : ''}
+      <button id="eExcl">${g.excluded ? '↩ Track again' : '🚫 Stop tracking'}</button>
       <button class="del" id="eDel">Delete</button>
     </div>`);
   $('#eModes').onclick = e => { const b = e.target.closest('button'); if (b) b.classList.toggle('on'); };
@@ -260,7 +263,8 @@ function showGame(id) {
     if (g.patch) showLast(g.patch);
     else checkPatch(g).then(() => { if (g.patch) { save(false); render(); showLast(g.patch); } }).catch(() => { });
   }
-  $('#eDel').onclick = () => { if (confirm(`Delete ${g.name}?`)) { Object.keys(g).forEach(k => k !== 'id' && delete g[k]); g.deleted = true; touch(g); save(); render(); closeSheet(); } };
+  $('#eExcl').onclick = () => { setExcluded(g, !g.excluded); closeSheet(); toast(g.excluded ? `Stopped tracking ${g.name} (Settings → Manage tracked games to undo)` : `Tracking ${g.name} again`); };
+  $('#eDel').onclick = () => { if (confirm(`Delete ${g.name}?`)) { Object.keys(g).forEach(k => k !== 'id' && k !== 'appid' && delete g[k]); g.deleted = true; touch(g); save(); render(); closeSheet(); } };
 }
 function parseAppId(v) { v = String(v).trim(); const m = v.match(/app\/(\d+)/) || v.match(/^(\d+)$/); return m ? +m[1] : null; }
 
@@ -284,7 +288,7 @@ let patching = false;
 async function refreshPatches(force = false) {
   if (patching || !NATIVE) return; patching = true;
   try {
-    const todo = live().filter(g => g.appid && g.list !== 'played' && g.list !== 'nottaste' && (force || !g.patchChecked || Date.now() - g.patchChecked > 12 * 36e5));
+    const todo = tracked().filter(g => g.appid && g.list !== 'played' && g.list !== 'nottaste' && (force || !g.patchChecked || Date.now() - g.patchChecked > 12 * 36e5));
     let i = 0, dirty = 0;
     const worker = async () => { while (i < todo.length) { const g = todo[i++]; try { await checkPatch(g); } catch { } if (++dirty % 20 === 0) { save(false); render(); } } };
     await Promise.all(Array.from({ length: 6 }, worker));
@@ -409,7 +413,17 @@ function showAdd() {
 }
 
 function showSettings() {
+  const w = settings.wishlist || {}, nEx = live().filter(g => g.excluded).length;
   openSheet(`<h2>Settings</h2>
+    <h3>Steam wishlist</h3>
+    <p class="muted">New games on your Steam wishlist are added automatically (checked every ~12 hours and when you tap ⟳). Your Steam <b>Game details</b> privacy must be <b>Public</b>. Games you stop tracking or delete are never re-added.</p>
+    <input id="wId" placeholder="Steam profile URL, custom URL name, or SteamID64" value="${esc(w.input || '')}">
+    <label>Add new wishlist games to</label>
+    <select id="wList">${Object.entries(LISTS).map(([k, t]) => `<option value="${k}" ${(w.list || 'want') === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
+    <div class="btns"><button class="pri" id="wSync">${w.steamid ? 'Save & sync now' : 'Connect wishlist'}</button>${w.steamid ? '<button id="wOff">Disconnect</button>' : ''}</div>
+    <p class="muted" id="wStat">${w.steamid ? `Connected (${esc(w.steamid)})${w.last ? ` · ${w.count ?? '?'} games on wishlist · checked ${rel(w.last)}` : ''}` : 'Not connected.'}</p>
+    <h3>Tracking</h3>
+    <div class="btns"><button id="sManage">🚫 Manage tracked games${nEx ? ` (${nEx} excluded)` : ''}</button></div>
     <h3>Sync across devices</h3>
     <p class="muted">Your list is stored on this device. To sync with another device (or a PC browser), paste a GitHub token with only the <b>gist</b> permission. Your list is saved in a secret gist on your account.</p>
     <input id="sTok" type="password" placeholder="GitHub token (ghp_… or github_pat_…)" value="${esc(settings.token)}">
@@ -434,6 +448,86 @@ function showSettings() {
     else navigator.clipboard.writeText(json).then(() => toast('Copied to clipboard'));
   };
   $('#sForce').onclick = () => { closeSheet(); refresh(true); };
+  $('#sManage').onclick = () => showManage();
+  $('#wSync').onclick = async () => {
+    const input = $('#wId').value.trim(); if (!input) return toast('Enter your Steam profile');
+    $('#wStat').textContent = 'Connecting…';
+    try {
+      const steamid = await resolveSteamId(input);
+      settings.wishlist = { ...settings.wishlist, input, steamid, list: $('#wList').value };
+      if (settings.wishlist.steamid !== w.steamid) delete settings.wishlist.last;
+      saveSettings();
+      const n = await syncWishlist(true);
+      closeSheet(); if (n) refresh();
+    } catch (e) { $('#wStat').textContent = e.message; }
+  };
+  if ($('#wOff')) $('#wOff').onclick = () => { delete settings.wishlist; saveSettings(); showSettings(); toast('Wishlist disconnected (games already added stay)'); };
+}
+
+// ===== Steam wishlist =====
+async function getText(url) {
+  const r = await fetch(NATIVE ? `__proxy?u=${encodeURIComponent(url)}` : url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.text();
+}
+async function resolveSteamId(v) {
+  let m = v.match(/\b(7656\d{13})\b/); if (m) return m[1];
+  if (!NATIVE) throw new Error('Custom profile names only resolve in the Android app — use your SteamID64.');
+  const name = (v.match(/\/id\/([^/?#]+)/) || [, v])[1];
+  if (!/^[\w-]{2,32}$/.test(name)) throw new Error('That doesn’t look like a Steam profile.');
+  const html = await getText(`https://store.steampowered.com/wishlist/id/${encodeURIComponent(name)}/`);
+  m = html.match(/steamid\\?"\s*:\s*\\?"(7656\d{13})/);
+  if (!m) throw new Error(`No Steam profile found for “${name}”.`);
+  return m[1];
+}
+async function syncWishlist(loud = false) {
+  const w = settings.wishlist; if (!w?.steamid) return 0;
+  const d = await getJSON(`https://api.steampowered.com/IWishlistService/GetWishlist/v1/?steamid=${w.steamid}`);
+  const items = d.response?.items;
+  if (!items) { const msg = 'Wishlist is empty or private (Steam → Edit Profile → Privacy → Game details: Public).'; if (loud) throw new Error(msg); return 0; }
+  const known = new Set(db.games.filter(g => g.appid).map(g => g.appid)); // includes excluded & deleted
+  const add = items.filter(i => !known.has(i.appid)).sort((a, b) => a.priority - b.priority);
+  for (const i of add) {
+    const g = { id: uid(), appid: i.appid, name: `Steam app ${i.appid}`, list: w.list || 'want', notes: '', myModes: [], added: (i.date_added * 1000) || Date.now(), src: 'wishlist' };
+    touch(g); db.games.push(g);
+  }
+  w.last = Date.now(); w.count = items.length; saveSettings();
+  if (add.length) { save(); render(); toast(`Added ${add.length} game(s) from your Steam wishlist`); }
+  else if (loud) toast(`Wishlist synced — all ${items.length} games already tracked or excluded`);
+  return add.length;
+}
+
+// ===== manage tracked / excluded games =====
+function setExcluded(g, on) {
+  if (on) g.excluded = true; else delete g.excluded;
+  touch(g); save(); render();
+}
+function showManage(filter = 'all', q = '') {
+  const all = live().sort((a, b) => (!!b.excluded - !!a.excluded) || a.name.localeCompare(b.name));
+  const F = { all: 'All', excluded: 'Excluded', wishlist: 'From wishlist', ...LISTS };
+  openSheet(`<div class="btns" style="margin-top:0"><button id="mBack">← Settings</button></div>
+    <h2>Manage tracked games</h2>
+    <p class="muted">Excluded games are hidden from your lists and never refreshed or notified, and wishlist sync won't add them back.</p>
+    <input id="mQ" type="search" placeholder="Search…" value="${esc(q)}">
+    <div class="chips" id="mF">${Object.entries(F).map(([k, t]) => `<button data-mf="${k}" class="${filter === k ? 'on' : ''}">${t}</button>`).join('')}</div>
+    <div id="mList"></div>`);
+  const draw = () => {
+    const nq = norm($('#mQ').value);
+    const rows = all.filter(g => (filter === 'all' || (filter === 'excluded' ? g.excluded : filter === 'wishlist' ? g.src === 'wishlist' : g.list === filter)) && (!nq || norm(g.name).includes(nq)));
+    $('#mList').innerHTML = rows.length ? rows.map(g => `<div class="mrow ${g.excluded ? 'off' : ''}" data-mid="${g.id}">
+        <span><b>${esc(g.name)}</b><small>${LISTS[g.list] || ''}${g.src === 'wishlist' ? ' · wishlist' : ''}</small></span>
+        <button class="tog">${g.excluded ? 'Excluded' : 'Tracking'}</button></div>`).join('') : '<p class="muted">No games.</p>';
+  };
+  draw();
+  $('#mQ').oninput = draw;
+  $('#mBack').onclick = () => showSettings();
+  $('#mF').onclick = e => { const b = e.target.closest('[data-mf]'); if (b) showManage(b.dataset.mf, $('#mQ').value); };
+  $('#mList').onclick = e => {
+    const row = e.target.closest('[data-mid]'); if (!row || !e.target.closest('.tog')) return;
+    const g = db.games.find(x => x.id === row.dataset.mid); setExcluded(g, !g.excluded);
+    row.classList.toggle('off', !!g.excluded); row.querySelector('.tog').textContent = g.excluded ? 'Excluded' : 'Tracking';
+    if (!g.excluded && g.appid && !g.steam) refresh();
+  };
 }
 
 function importData(d) {
