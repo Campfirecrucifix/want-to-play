@@ -172,6 +172,11 @@ function render() {
     name: (a, b) => a.name.localeCompare(b.name),
     added: (a, b) => b.added - a.added,
     release: (a, b) => (b.steam?.ts || 0) - (a.steam?.ts || 0),
+    // soonest dated release first, then vaguer dates (month/quarter/year sort by their date too), then TBA, then out/early access
+    soon: (a, b) => {
+      const r = g => ({ soon: 0, tba: 1, ea: 2, new: 3, out: 4 }[gkind(g)] ?? 5), ra = r(a), rb = r(b);
+      return ra - rb || (ra === 0 ? a.steam.ts - b.steam.ts : (b.steam?.ts || 0) - (a.steam?.ts || 0)) || a.name.localeCompare(b.name);
+    },
     patch: (a, b) => (b.patch?.date || 0) - (a.patch?.date || 0) || a.name.localeCompare(b.name),
     status: (a, b) => STATUS[gkind(a)].o - STATUS[gkind(b)].o || (gkind(a) === 'soon' ? (a.steam.ts - b.steam.ts) : (b.steam?.ts || 0) - (a.steam?.ts || 0)) || a.name.localeCompare(b.name),
   }[settings.sort];
