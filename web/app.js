@@ -337,7 +337,7 @@ function patchSummary(src, title = '') {
   let blocks = src.replace(/\[(o?list)\][\s\S]*?\[\/\1\]/gi, '\n').split(/\[\/?(?:p|h[1-6]|hr|quote|table|img)[^\]]*\]|\n/i).map(strip).filter(Boolean);
   blocks = blocks.flatMap(b => b.split(/\s(?=\d+[.)]\s+[A-Z])/)); // "...vary: 1. Optimized ... 2. Fixed ..."
   blocks = blocks.filter(b => { const m = b.match(/^(?:\d+[.)]|[-•*])\s+(.*)/); if (m) bullets.push(m[1]); return !m; });
-  const items = bullets.filter(b => b.length > 8 && /[a-z]{3}/.test(b) && !/^[A-Z][a-z]+ d{1,2},? d{4}/.test(b) && !/:$/.test(b) && !FLUFF.test(b));
+  const items = bullets.filter(b => b.length > 8 && /[a-z]{3}/.test(b) && !/^[A-Z][a-z]+ \d{1,2},? \d{4}/.test(b) && !/:$/.test(b) && !FLUFF.test(b));
   const prose = blocks.map(b => b.replace(/^(hi|hello|hey|greetings|dear|howdy|ahoy|good (morning|afternoon|evening))\b[^.!?]{0,40}?[,!.]+\s*/i, ''))
     .filter(b => b.length > 30 && /[a-z]{3}/.test(b) && b !== strip(title) && !/^(version|build|changelog|patch notes|update notes|known issues)\b[^.!?]{0,40}$/i.test(b));
   const sentences = (prose.join(' ').match(/.+?(?:[.!?]+(?=\s+["“(]?[A-Z])|[.!?]*$)/g) || []).map(s => s.trim())
