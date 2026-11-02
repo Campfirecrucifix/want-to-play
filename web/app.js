@@ -202,7 +202,7 @@ function renderFilters() {
 function renderBanner() {
   const recent = live().filter(g => g.change && Date.now() - g.change.at < 14 * DAY).sort((a, b) => b.change.at - a.change.at);
   let h = '';
-  if (shellUpdate) h += `<div class="upd">App shell update available (v${shellUpdate.v}). <a href="#" data-apk="${esc(shellUpdate.url)}">Download</a></div>`;
+  if (shellUpdate) h += `<div class="upd" id="updBox">App update v${shellUpdate.v} available. <button class="updbtn" data-apk="${esc(shellUpdate.url)}">${updState || 'Update'}</button></div>`;
   if (recent.length) h += `<details class="changes"><summary>🔔 ${recent.length} status change(s) in the last 2 weeks</summary>${recent.map(g =>
     `<div data-id="${g.id}" class="chg"><b>${esc(g.name)}</b>: ${esc(g.change.from)} → <b>${esc(g.change.to)}</b> <small>${rel(g.change.at)}</small></div>`).join('')}</details>`;
   $('#banner').innerHTML = h;
@@ -443,7 +443,15 @@ async function sync(loud) {
 }
 
 // ===== shell self-update check =====
-let shellUpdate = null;
+let shellUpdate = null, updState = '';
+// called by the Android shell while updating
+window.onUpdateStatus = (state, pct) => {
+  updState = { progress: `Downloading ${pct}%`, installing: 'Opening installer…', error: 'Failed — tap to retry', denied: 'Permission needed — tap to retry',
+    permission: 'Allow “install unknown apps”, then come back' }[state] || '';
+  if (state === 'error' || state === 'denied') { updState = ''; toast(state === 'error' ? 'Update download failed — tap Update to retry' : 'Update needs the “install unknown apps” permission'); }
+  if (state === 'installing') setTimeout(() => { updState = ''; renderBanner(); }, 4000);
+  renderBanner();
+};
 async function checkShell() {
   if (!NATIVE || !window.WTP.shellVersion) return;
   try {
@@ -460,7 +468,14 @@ function openExternal(url) { NATIVE && window.WTP.openExternal ? window.WTP.open
 document.addEventListener('click', e => {
   const t = e.target;
   const open = t.closest('[data-open]'); if (open) { e.preventDefault(); return openExternal(open.dataset.open); }
-  const apk = t.closest('[data-apk]'); if (apk) { e.preventDefault(); return openExternal(apk.dataset.apk); }
+  const apk = t.closest('[data-apk]');
+  if (apk) {
+    e.preventDefault();
+    if (updState) return; // already in progress
+    if (window.WTP?.installUpdate) { updState = 'Starting…'; renderBanner(); window.WTP.installUpdate(apk.dataset.apk, shellUpdate.v); }
+    else openExternal(apk.dataset.apk); // shells older than v4: download via browser
+    return;
+  }
   const tab = t.closest('[data-list]'); if (tab) { settings.list = tab.dataset.list; saveSettings(); return render(); }
   const f = t.closest('#filters [data-f]');
   if (f) { const v = f.dataset.f; settings.filters = settings.filters.includes(v) ? settings.filters.filter(x => x !== v) : [...settings.filters, v]; saveSettings(); return render(); }

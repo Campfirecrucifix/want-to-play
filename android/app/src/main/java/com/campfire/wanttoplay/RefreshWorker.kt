@@ -63,6 +63,25 @@ class RefreshWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params
     }
 
     override fun doWork(): Result {
+        checkAppUpdate()
+        return checkGames()
+    }
+
+    /** New release? Pre-download it so tapping the notification goes straight to the installer. */
+    private fun checkAppUpdate() {
+        val ctx = applicationContext
+        val prefs = ctx.getSharedPreferences(PREFS, 0)
+        val rel = Updater.latest() ?: return
+        if (rel.version <= BuildConfig.VERSION_CODE || prefs.getInt("updateNotified", 0) >= rel.version) return
+        val canInstall = ctx.packageManager.canRequestPackageInstalls()
+        val intent = if (canInstall) {
+            try { Updater.installIntent(ctx, Updater.download(ctx, rel.apkUrl, rel.version)) } catch (e: Exception) { return }
+        } else Intent(ctx, MainActivity::class.java)
+        notify(-1, "Want to Play update ready", if (canInstall) "Tap to install v${rel.version}" else "Open the app and tap Update (v${rel.version})", intent)
+        prefs.edit().putInt("updateNotified", rel.version).apply()
+    }
+
+    private fun checkGames(): Result {
         val prefs = applicationContext.getSharedPreferences(PREFS, 0)
         val original = prefs.getString("watch", "[]")
         val watch = try { JSONArray(original) } catch (e: Exception) { return Result.success() }
@@ -99,12 +118,12 @@ class RefreshWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params
         return Result.success()
     }
 
-    private fun notify(id: Int, title: String, text: String) {
+    private fun notify(id: Int, title: String, text: String, intent: Intent = Intent(applicationContext, MainActivity::class.java)) {
         val ctx = applicationContext
         if (Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val nm = ctx.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Game status changes", NotificationManager.IMPORTANCE_DEFAULT))
-        val pi = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val pi = PendingIntent.getActivity(ctx, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         nm.notify(id, NotificationCompat.Builder(ctx, CHANNEL)
             .setSmallIcon(android.R.drawable.star_on)
             .setContentTitle(title).setContentText(text)

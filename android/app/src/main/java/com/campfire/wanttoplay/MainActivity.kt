@@ -11,6 +11,7 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowInsets
 import android.widget.FrameLayout
 import android.webkit.*
@@ -22,6 +23,7 @@ const val BASE = "https://campfirecrucifix.github.io/want-to-play/"
 
 class MainActivity : Activity() {
     private lateinit var web: WebView
+    private var pendingUpdate: Pair<String, Int>? = null  // waiting for "install unknown apps" permission
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -61,6 +63,37 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         RefreshWorker.schedule(this)
+        Updater.cleanup(this)
+    }
+
+    private fun js(code: String) = runOnUiThread { web.evaluateJavascript(code, null) }
+    private fun status(state: String, pct: Int = 0) = js("window.onUpdateStatus && onUpdateStatus('$state',$pct)")
+
+    /** Download the release APK (with progress shown in the web UI) and open Android's installer. */
+    fun startUpdate(url: String, version: Int) = runOnUiThread {
+        if (!url.startsWith(Updater.ALLOWED)) return@runOnUiThread status("error")
+        if (!packageManager.canRequestPackageInstalls()) {
+            pendingUpdate = url to version
+            status("permission")
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return@runOnUiThread
+        }
+        Thread {
+            try {
+                val apk = Updater.download(this, url, version) { status("progress", it) }
+                status("installing", 100)
+                runOnUiThread { startActivity(Updater.installIntent(this, apk)) }
+            } catch (e: Exception) { status("error") }
+        }.start()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Back from the "install unknown apps" screen: continue automatically if allowed.
+        pendingUpdate?.let { (url, v) ->
+            pendingUpdate = null
+            if (packageManager.canRequestPackageInstalls()) startUpdate(url, v) else status("denied")
+        }
     }
 
     override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); web.saveState(out) }
@@ -102,7 +135,8 @@ fun openExternal(ctx: Context, url: String) {
     try { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
 }
 
-class Bridge(private val ctx: Context) {
+class Bridge(private val ctx: MainActivity) {
+    @JavascriptInterface fun installUpdate(url: String, version: Int) = ctx.startUpdate(url, version)
     @JavascriptInterface fun shellVersion(): Int = BuildConfig.VERSION_CODE
     @JavascriptInterface fun openExternal(url: String) = openExternal(ctx, url)
     @JavascriptInterface fun setWatch(json: String) = RefreshWorker.setWatch(ctx, json)
