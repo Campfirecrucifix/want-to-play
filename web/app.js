@@ -110,6 +110,7 @@ async function refresh(force = false) {
     }
     save(false); render(); syncSoon();
     if (changes.length) toast(`${changes.length} game(s) changed status`);
+    refreshPatches(force).catch(() => { });
   } catch (e) { toast('Refresh failed: ' + e.message); }
   finally { refreshing = false; $('#btnRefresh').classList.remove('spin'); }
 }
@@ -169,6 +170,7 @@ function render() {
     name: (a, b) => a.name.localeCompare(b.name),
     added: (a, b) => b.added - a.added,
     release: (a, b) => (b.steam?.ts || 0) - (a.steam?.ts || 0),
+    patch: (a, b) => (b.patch?.date || 0) - (a.patch?.date || 0) || a.name.localeCompare(b.name),
     status: (a, b) => STATUS[gkind(a)].o - STATUS[gkind(b)].o || (gkind(a) === 'soon' ? (a.steam.ts - b.steam.ts) : (b.steam?.ts || 0) - (a.steam?.ts || 0)) || a.name.localeCompare(b.name),
   }[settings.sort];
   games.sort(by);
@@ -187,6 +189,7 @@ function card(g) {
       <div class="row modes">${modesOf(g).map(m => `<span class="mode">${esc(m)}</span>`).join('')}</div>
       ${s?.tags?.length ? `<div class="tags">${esc(s.tags.slice(0, 5).join(' · '))}</div>` : ''}
       ${g.notes ? `<div class="notes">${esc(g.notes)}</div>` : ''}
+      ${g.patch && (settings.sort === 'patch' || Date.now() - g.patch.date < 30 * DAY) ? `<div class="cpatch">🛠 <b>Patched ${rel(g.patch.date)}</b>${g.patch.changes ? ` · ${g.patch.changes} changes` : ''}${g.patch.sum ? ` — ${esc(g.patch.sum)}` : ''}</div>` : ''}
     </div></article>`;
 }
 function renderTabs() {
@@ -253,10 +256,9 @@ function showGame(id) {
   };
   if ($('#ePatch')) {
     $('#ePatch').onclick = () => showPatches(g.id);
-    getNews(g.appid).then(items => {
-      const p = items.find(n => n.patch), btn = $('#ePatch');
-      if (p && btn) btn.parentElement.insertAdjacentHTML('beforebegin', `<p class="lastpatch">Last patch: ${esc(p.title)} · ${rel(p.date)}</p>`);
-    }).catch(() => { });
+    const showLast = p => $('#ePatch')?.parentElement.insertAdjacentHTML('beforebegin', `<div class="lastpatch"><b>Last patch:</b> ${esc(p.title)} · ${rel(p.date)}${p.sum ? `<div class="psum">${esc(p.sum)}</div>` : ''}</div>`);
+    if (g.patch) showLast(g.patch);
+    else checkPatch(g).then(() => { if (g.patch) { save(false); render(); showLast(g.patch); } }).catch(() => { });
   }
   $('#eDel').onclick = () => { if (confirm(`Delete ${g.name}?`)) { Object.keys(g).forEach(k => k !== 'id' && delete g[k]); g.deleted = true; touch(g); save(); render(); closeSheet(); } };
 }
@@ -264,11 +266,35 @@ function parseAppId(v) { v = String(v).trim(); const m = v.match(/app\/(\d+)/) |
 
 // ===== patches & news (official Steam announcements) =====
 const newsCache = {};
-const isPatch = n => (n.tags || []).includes('patchnotes') || /patch|hotfix|changelog|update|fixes|bug ?fix|\bv?\d+\.\d+(\.\d+)?\b/i.test(n.title);
+const isPatch = n => (n.tags || []).includes('patchnotes') || !/console|nintendo|switch|playstation|ps[45]|xbox/i.test(n.title) && /patch|hotfix|changelog|update|fixes|bug ?fix|\bv?\d+\.\d+(\.\d+)?\b/i.test(n.title);
+const NEWS = 'https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?feeds=steam_community_announcements&format=json&appid=';
+
+// Latest patch per game: a ~4KB titles-only check; the full post is fetched (and summarized) only when it's a new patch.
+async function checkPatch(g) {
+  const d = await getJSON(`${NEWS}${g.appid}&count=10&maxlength=1`);
+  g.patchChecked = Date.now();
+  const p = (d.appnews?.newsitems || []).find(isPatch);
+  if (!p) return;
+  if (g.patch?.gid === p.gid && g.patch.sum != null) return;
+  const full = (await getJSON(`${NEWS}${g.appid}&count=1&enddate=${p.date}&maxlength=0`)).appnews?.newsitems?.[0];
+  const sm = full?.gid === p.gid ? patchSummary(full.contents, full.title) : { text: '', changes: 0 };
+  g.patch = { gid: p.gid, title: p.title, date: p.date * 1000, url: p.url, sum: sm.text, changes: sm.changes };
+}
+let patching = false;
+async function refreshPatches(force = false) {
+  if (patching || !NATIVE) return; patching = true;
+  try {
+    const todo = live().filter(g => g.appid && g.list !== 'played' && g.list !== 'nottaste' && (force || !g.patchChecked || Date.now() - g.patchChecked > 12 * 36e5));
+    let i = 0, dirty = 0;
+    const worker = async () => { while (i < todo.length) { const g = todo[i++]; try { await checkPatch(g); } catch { } if (++dirty % 20 === 0) { save(false); render(); } } };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    if (dirty) { save(false); render(); }
+  } finally { patching = false; }
+}
 async function getNews(appid) {
   const c = newsCache[appid];
   if (c && Date.now() - c.at < 30 * 6e4) return c.items;
-  const d = await getJSON(`https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=${appid}&count=40&maxlength=0&feeds=steam_community_announcements&format=json`);
+  const d = await getJSON(`${NEWS}${appid}&count=40&maxlength=0`);
   const items = (d.appnews?.newsitems || []).map(n => ({ title: n.title, date: n.date * 1000, url: n.url, body: n.contents, patch: isPatch(n) }));
   newsCache[appid] = { at: Date.now(), items };
   return items;
@@ -287,7 +313,8 @@ async function showPatches(id, all = false) {
     const items = (await getNews(g.appid)).filter(n => all || n.patch);
     if (!$('#pList')) return;
     $('#pList').innerHTML = items.length ? items.map((n, i) => `<details class="news" data-i="${i}" ${i === 0 ? 'open' : ''}>
-        <summary><b>${esc(n.title)}</b><span class="when">${fmtDate(n.date)} · ${rel(n.date)}</span>${n.patch ? '<span class="st patch">Patch</span>' : ''}</summary>
+        <summary><b>${esc(n.title)}</b><span class="when">${fmtDate(n.date)} · ${rel(n.date)}</span>${n.patch ? '<span class="st patch">Patch</span>' : ''}
+          ${n.patch ? (sm => sm.text ? `<span class="psum">${esc(sm.text)}</span>` : '')(patchSummary(n.body, n.title)) : ''}</summary>
         <div class="bb">${i === 0 ? bb(n.body) : ''}</div>
         <div class="btns"><button data-open="${esc(n.url)}">Open on Steam</button></div></details>`).join('')
       : `<p class="muted">${all ? 'No announcements found.' : 'No recent patch notes found. Try “All announcements”.'}</p>`;
@@ -299,6 +326,27 @@ async function showPatches(id, all = false) {
     if ($('#pList')) $('#pList').innerHTML = `<p class="muted">${NATIVE ? 'Could not load news (' + esc(e.message) + ').' : 'Patch notes load in the Android app only.'}</p>
       <div class="btns"><button data-open="https://store.steampowered.com/news/app/${g.appid}">Open Steam news page</button></div>`;
   }
+}
+
+// 1–2 sentence summary of a Steam patch post (prototype/test: seed-tools/patchSummary.js)
+function patchSummary(src, title = '') {
+  const strip = s => s.replace(/\{STEAM_CLAN_IMAGE\}\S*/g, '').replace(/\[[^\]]*\]/g, '').replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim();
+  const KEY = /\b(fix|add|improv|balanc|adjust|optimi[sz]|remov|rework|tweak|introduc|new|feature|content|crash|bug|nerf|buff|chang)/i;
+  const FLUFF = /^(attention|reminder|remember|note|please|psa|important|disclaimer|developer note|spoiler)\b|\b(below|following|full list|read on|check out|discord|wishlist|follow us|join (our|the)|maintenance|downtime|completion time|thank you|thanks|apolog|changelog|version is|mods?\b|we.ll (share|continue|be back)|we.re back|stay tuned|leaves|autumn|weather)/i;
+  const bullets = [...src.matchAll(/\[\*\]([\s\S]*?)(?=\[\*\]|\[\/\*\]|\[\/list\]|\[\/olist\]|$)/gi)].map(m => strip(m[1]));
+  let blocks = src.replace(/\[(o?list)\][\s\S]*?\[\/\1\]/gi, '\n').split(/\[\/?(?:p|h[1-6]|hr|quote|table|img)[^\]]*\]|\n/i).map(strip).filter(Boolean);
+  blocks = blocks.flatMap(b => b.split(/\s(?=\d+[.)]\s+[A-Z])/)); // "...vary: 1. Optimized ... 2. Fixed ..."
+  blocks = blocks.filter(b => { const m = b.match(/^(?:\d+[.)]|[-•*])\s+(.*)/); if (m) bullets.push(m[1]); return !m; });
+  const items = bullets.filter(b => b.length > 8 && /[a-z]{3}/.test(b) && !/^[A-Z][a-z]+ d{1,2},? d{4}/.test(b) && !/:$/.test(b) && !FLUFF.test(b));
+  const prose = blocks.map(b => b.replace(/^(hi|hello|hey|greetings|dear|howdy|ahoy|good (morning|afternoon|evening))\b[^.!?]{0,40}?[,!.]+\s*/i, ''))
+    .filter(b => b.length > 30 && /[a-z]{3}/.test(b) && b !== strip(title) && !/^(version|build|changelog|patch notes|update notes|known issues)\b[^.!?]{0,40}$/i.test(b));
+  const sentences = (prose.join(' ').match(/.+?(?:[.!?]+(?=\s+["“(]?[A-Z])|[.!?]*$)/g) || []).map(s => s.trim())
+    .filter(s => s.length > 20 && !/[:;]$/.test(s) && !FLUFF.test(s));
+  const keyed = sentences.filter(x => KEY.test(x));
+  const p2 = (keyed.length ? keyed : items.length ? [] : sentences).slice(0, 2).join(' ');
+  let out = p2 ? p2 : items.length ? items.slice(0, 2).map(b => b.replace(/[.;,!]+$/, '')).join('; ') + '.' : p2;
+  if (out.length > 240) out = out.slice(0, 237).replace(/\s+\S*$/, '') + '…';
+  return { text: out, changes: items.length > 2 ? items.length : 0 };
 }
 
 // Steam announcement BBCode -> safe HTML (input is escaped first; only whitelisted tags are re-created)
@@ -429,7 +477,10 @@ async function sync(loud) {
     const map = new Map(db.games.map(g => [g.id, g]));
     for (const r of remote) {
       const l = map.get(r.id);
-      if (!l || r.u > l.u || (r.u === l.u && (r.steam?.fetched || 0) > (l.steam?.fetched || 0))) map.set(r.id, r);
+      if (!l || r.u > l.u || (r.u === l.u && (r.steam?.fetched || 0) > (l.steam?.fetched || 0))) {
+        if (l?.patch && (l.patch.date > (r.patch?.date || 0))) { r.patch = l.patch; r.patchChecked = l.patchChecked; } // keep newer local patch info
+        map.set(r.id, r);
+      }
     }
     db.games = [...map.values()];
     for (const g of db.games) if (g.myModes) g.myModes = g.myModes.map(m => normMode(m) || m);

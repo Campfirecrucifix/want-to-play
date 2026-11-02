@@ -80,3 +80,7 @@ h3 { margin:0 0 3px; font-size:15px; }
 .bb table { border-collapse:collapse; } .bb td, .bb th { border:1px solid #333b4d; padding:2px 6px; }
 .lastpatch { font-size:12px; color:#a4d007; }
 .updbtn { background:var(--acc); color:#000; border:0; border-radius:6px; padding:5px 12px; margin-left:6px; font:inherit; font-weight:600; }
+.cpatch { font-size:12px; color:#b9c7d3; margin-top:4px; line-height:1.35; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.cpatch b { color:#a4d007; font-weight:600; }
+.psum { display:block; font-size:12px; color:#b9c7d3; font-weight:normal; margin-top:3px; line-height:1.35; }
+.lastpatch { margin:10px 0 0; }
