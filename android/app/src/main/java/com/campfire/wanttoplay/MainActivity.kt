@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowInsets
+import android.widget.FrameLayout
 import android.webkit.*
 import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
@@ -25,11 +26,17 @@ class MainActivity : Activity() {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         web = WebView(this)
+        // WebView ignores its own padding, so pad a container around it to keep content clear of
+        // the status bar, navigation bar, notch and keyboard (Android 15 forces edge-to-edge).
+        val root = FrameLayout(this)
+        root.setBackgroundColor(Color.parseColor("#171A21"))
         web.setBackgroundColor(Color.parseColor("#171A21"))
-        setContentView(web)
-        if (Build.VERSION.SDK_INT >= 30) web.setOnApplyWindowInsetsListener { v, ins ->
-            val b = ins.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
-            v.setPadding(b.left, b.top, b.right, b.bottom); ins
+        root.addView(web, FrameLayout.LayoutParams(-1, -1))
+        setContentView(root)
+        if (Build.VERSION.SDK_INT >= 30) root.setOnApplyWindowInsetsListener { v, ins ->
+            val b = ins.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
+            v.setPadding(b.left, b.top, b.right, b.bottom)
+            WindowInsets.CONSUMED
         }
         web.settings.apply {
             javaScriptEnabled = true

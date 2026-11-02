@@ -57,3 +57,25 @@ h3 { margin:0 0 3px; font-size:15px; }
 .res.manual span { color:var(--acc); }
 #toast { position:fixed; left:50%; bottom:90px; transform:translateX(-50%); background:#000d; padding:8px 14px; border-radius:8px; opacity:0; transition:opacity .3s; pointer-events:none; z-index:20; max-width:90%; }
 #toast.show { opacity:1; }
+/* fallback for old shells that drew under status/nav bars */
+.legacy-insets header { padding-top:40px; }
+.legacy-insets body { padding-bottom:150px; }
+.legacy-insets #fab { bottom:72px; }
+.legacy-insets .sheet-body { padding-bottom:72px; max-height:calc(100vh - 40px); }
+.legacy-insets #toast { bottom:150px; }
+/* patches */
+.news { border-top:1px solid #333b4d; padding:8px 0; }
+.news summary { cursor:pointer; list-style:none; }
+.news summary::-webkit-details-marker { display:none; }
+.news summary b { display:block; }
+.news .when { font-size:12px; color:var(--mut); }
+.news .st { margin-left:6px; }
+.st.patch { background:#4c6b22; }
+.bb { font-size:14px; overflow-wrap:anywhere; padding-top:6px; }
+.bb img { max-width:100%; height:auto; border-radius:6px; }
+.bb h1, .bb h2, .bb h3 { font-size:15px; margin:12px 0 4px; }
+.bb ul, .bb ol { padding-left:20px; margin:4px 0; }
+.bb p { margin:4px 0; }
+.bb blockquote { border-left:3px solid #333b4d; margin:6px 0; padding-left:8px; color:var(--mut); }
+.bb table { border-collapse:collapse; } .bb td, .bb th { border:1px solid #333b4d; padding:2px 6px; }
+.lastpatch { font-size:12px; color:#a4d007; }

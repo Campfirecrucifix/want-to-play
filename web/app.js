@@ -4,6 +4,8 @@ const REPO = 'Campfirecrucifix/want-to-play';
 const KEY = 'wtp.v1', SET = 'wtp.settings', TAGS = 'wtp.tags';
 const GIST_FILE = 'want-to-play.json';
 const NATIVE = !!window.WTP;
+// Shell v2 and older drew under the system bars; pad from the web side until the shell is updated.
+if (NATIVE && window.WTP.shellVersion && window.WTP.shellVersion() < 3) document.documentElement.classList.add('legacy-insets');
 const LISTS = { want: 'Want to Play', her: 'For Her', played: 'Played', nottaste: 'Not My Taste' };
 const MODES = ['Single', 'Co-op', 'Online Co-op', 'Local Co-op', 'PvP', 'MMO', 'VR', 'Multiplayer'];
 const STATUS = { // order = sort order for "Sort: Status"
@@ -207,7 +209,10 @@ function renderBanner() {
 }
 
 // ===== sheets (detail / add / settings) =====
-function openSheet(html) { $('#sheetBody').innerHTML = html; $('#sheet').classList.remove('hidden'); history.pushState({ sheet: 1 }, ''); }
+function openSheet(html) {
+  $('#sheetBody').innerHTML = html; $('#sheetBody').scrollTop = 0;
+  if ($('#sheet').classList.contains('hidden')) { $('#sheet').classList.remove('hidden'); history.pushState({ sheet: 1 }, ''); }
+}
 function closeSheet(fromPop) { if ($('#sheet').classList.contains('hidden')) return; $('#sheet').classList.add('hidden'); if (!fromPop) history.back(); }
 window.addEventListener('popstate', () => closeSheet(true));
 $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
@@ -235,6 +240,7 @@ function showGame(id) {
       <button class="pri" id="eSave">Save</button>
       ${g.appid ? `<button data-open="https://store.steampowered.com/app/${g.appid}">Steam page</button>` : ''}
       ${s?.demo ? `<button data-open="https://store.steampowered.com/app/${s.demo}">Demo page</button>` : ''}
+      ${g.appid ? `<button id="ePatch">📝 Patches & news</button>` : ''}
       <button class="del" id="eDel">Delete</button>
     </div>`);
   $('#eModes').onclick = e => { const b = e.target.closest('button'); if (b) b.classList.toggle('on'); };
@@ -245,9 +251,74 @@ function showGame(id) {
     if (app !== g.appid) { g.appid = app; g.steam = null; g.change = null; }
     touch(g); save(); render(); closeSheet(); if (app && !g.steam) refresh();
   };
+  if ($('#ePatch')) {
+    $('#ePatch').onclick = () => showPatches(g.id);
+    getNews(g.appid).then(items => {
+      const p = items.find(n => n.patch), btn = $('#ePatch');
+      if (p && btn) btn.parentElement.insertAdjacentHTML('beforebegin', `<p class="lastpatch">Last patch: ${esc(p.title)} · ${rel(p.date)}</p>`);
+    }).catch(() => { });
+  }
   $('#eDel').onclick = () => { if (confirm(`Delete ${g.name}?`)) { Object.keys(g).forEach(k => k !== 'id' && delete g[k]); g.deleted = true; touch(g); save(); render(); closeSheet(); } };
 }
 function parseAppId(v) { v = String(v).trim(); const m = v.match(/app\/(\d+)/) || v.match(/^(\d+)$/); return m ? +m[1] : null; }
+
+// ===== patches & news (official Steam announcements) =====
+const newsCache = {};
+const isPatch = n => (n.tags || []).includes('patchnotes') || /patch|hotfix|changelog|update|fixes|bug ?fix|\bv?\d+\.\d+(\.\d+)?\b/i.test(n.title);
+async function getNews(appid) {
+  const c = newsCache[appid];
+  if (c && Date.now() - c.at < 30 * 6e4) return c.items;
+  const d = await getJSON(`https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=${appid}&count=40&maxlength=0&feeds=steam_community_announcements&format=json`);
+  const items = (d.appnews?.newsitems || []).map(n => ({ title: n.title, date: n.date * 1000, url: n.url, body: n.contents, patch: isPatch(n) }));
+  newsCache[appid] = { at: Date.now(), items };
+  return items;
+}
+
+async function showPatches(id, all = false) {
+  const g = db.games.find(x => x.id === id); if (!g) return;
+  openSheet(`<div class="btns" style="margin-top:0"><button id="pBack">← Back</button></div>
+    <h2>${esc(g.name)}</h2>
+    <div class="chips"><button id="pPatch" class="${all ? '' : 'on'}">Patches</button><button id="pAll" class="${all ? 'on' : ''}">All announcements</button></div>
+    <div id="pList"><p class="muted">Loading…</p></div>`);
+  $('#pBack').onclick = () => showGame(id);
+  $('#pPatch').onclick = () => showPatches(id, false);
+  $('#pAll').onclick = () => showPatches(id, true);
+  try {
+    const items = (await getNews(g.appid)).filter(n => all || n.patch);
+    if (!$('#pList')) return;
+    $('#pList').innerHTML = items.length ? items.map((n, i) => `<details class="news" data-i="${i}" ${i === 0 ? 'open' : ''}>
+        <summary><b>${esc(n.title)}</b><span class="when">${fmtDate(n.date)} · ${rel(n.date)}</span>${n.patch ? '<span class="st patch">Patch</span>' : ''}</summary>
+        <div class="bb">${i === 0 ? bb(n.body) : ''}</div>
+        <div class="btns"><button data-open="${esc(n.url)}">Open on Steam</button></div></details>`).join('')
+      : `<p class="muted">${all ? 'No announcements found.' : 'No recent patch notes found. Try “All announcements”.'}</p>`;
+    // render bodies lazily when expanded
+    document.querySelectorAll('#pList details').forEach(d => d.addEventListener('toggle', () => {
+      const box = d.querySelector('.bb'); if (d.open && !box.innerHTML) box.innerHTML = bb(items[d.dataset.i].body);
+    }));
+  } catch (e) {
+    if ($('#pList')) $('#pList').innerHTML = `<p class="muted">${NATIVE ? 'Could not load news (' + esc(e.message) + ').' : 'Patch notes load in the Android app only.'}</p>
+      <div class="btns"><button data-open="https://store.steampowered.com/news/app/${g.appid}">Open Steam news page</button></div>`;
+  }
+}
+
+// Steam announcement BBCode -> safe HTML (input is escaped first; only whitelisted tags are re-created)
+function bb(src) {
+  const http = u => /^https?:\/\//i.test(u) ? u : '';
+  let s = esc(src).replace(/\{STEAM_CLAN_IMAGE\}/g, 'https://clan.akamai.steamstatic.com/images');
+  const hasP = /\[p\b/i.test(s);
+  s = s
+    .replace(/\[img src=&quot;(.*?)&quot;[^\]]*\](?:\[\/img\])?/gi, (_, u) => http(u) ? `<img src="${u}" loading="lazy" alt="">` : '')
+    .replace(/\[img(?:=[^\]]*)?\]([\s\S]*?)\[\/img\]/gi, (_, u) => http(u.trim()) ? `<img src="${u.trim()}" loading="lazy" alt="">` : '')
+    .replace(/\[url=(?:&quot;)?(.*?)(?:&quot;)?\]([\s\S]*?)\[\/url\]/gi, (_, u, t) => http(u) ? `<a href="#" data-open="${u}">${t}</a>` : t)
+    .replace(/\[previewyoutube=&quot;?([\w-]+)[^\]]*\]\[\/previewyoutube\]/gi, (_, id) => `<p><a href="#" data-open="https://youtu.be/${id}">▶ Watch video</a></p>`)
+    .replace(/\[(\/?)(h[1-6]|b|i|u|s|p|code|table|tr|td|th)(?:\s[^\]]*)?\]/gi, '<$1$2>')
+    .replace(/\[(\/?)list\]/gi, '<$1ul>').replace(/\[(\/?)olist\]/gi, '<$1ol>')
+    .replace(/\[\*\]/g, '<li>').replace(/\[\/\*\]/g, '</li>')
+    .replace(/\[hr\](\[\/hr\])?/gi, '<hr>')
+    .replace(/\[quote(?:=[^\]]*)?\]/gi, '<blockquote>').replace(/\[\/quote\]/gi, '</blockquote>')
+    .replace(/\[\/?[a-z][a-z0-9]*(?:[= ][^\]]*)?\]/gi, '');
+  return hasP ? s : s.replace(/\n/g, '<br>');
+}
 
 function showAdd() {
   openSheet(`<h2>Add game</h2>
