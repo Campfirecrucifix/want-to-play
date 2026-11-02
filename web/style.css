@@ -91,3 +91,12 @@ h3 { margin:0 0 3px; font-size:15px; }
 .mrow .tog { flex:none; border:0; border-radius:14px; padding:5px 12px; background:#2f6b2f; color:#d8f5c8; font:inherit; font-size:12px; }
 .mrow.off b { color:#8f98a0; text-decoration:line-through; }
 .mrow.off .tog { background:#5a2a2a; color:#f3c2c2; }
+.card { position:relative; }
+.card.fav { box-shadow:inset 3px 0 0 #e8b923; }
+.star { background:none; border:0; padding:4px 8px; font-size:20px; line-height:1; color:#5d6b7a; cursor:pointer; }
+.star.on { color:#e8b923; }
+.card .star { position:absolute; top:2px; right:2px; }
+.card h3 { padding-right:26px; }
+.star.big { font-size:24px; padding:0 8px 0 0; vertical-align:-2px; }
+.tgl { display:flex; align-items:center; gap:8px; font-size:14px; margin:6px 0; }
+.tgl input { width:18px; height:18px; flex:none; }

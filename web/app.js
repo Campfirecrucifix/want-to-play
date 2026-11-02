@@ -166,7 +166,7 @@ function render() {
   if (q) games = games.filter(g => norm([g.name, g.notes, ...(g.steam?.tags || []), ...modesOf(g), g.steam?.dev].join(' ')).includes(q));
   for (const f of settings.filters) {
     const [t, v] = f.split(':');
-    games = games.filter(g => t === 's' ? gkind(g) === v : t === 'demo' ? g.steam?.demo : modesOf(g).includes(v));
+    games = games.filter(g => t === 's' ? gkind(g) === v : t === 'demo' ? g.steam?.demo : t === 'fav' ? g.fav : modesOf(g).includes(v));
   }
   const by = {
     name: (a, b) => a.name.localeCompare(b.name),
@@ -175,13 +175,14 @@ function render() {
     patch: (a, b) => (b.patch?.date || 0) - (a.patch?.date || 0) || a.name.localeCompare(b.name),
     status: (a, b) => STATUS[gkind(a)].o - STATUS[gkind(b)].o || (gkind(a) === 'soon' ? (a.steam.ts - b.steam.ts) : (b.steam?.ts || 0) - (a.steam?.ts || 0)) || a.name.localeCompare(b.name),
   }[settings.sort];
-  games.sort(by);
+  games.sort(settings.favTop !== false ? (a, b) => (!!b.fav - !!a.fav) || by(a, b) : by);
   $('#list').innerHTML = games.length ? games.map(card).join('') : `<p class="empty">No games here. Tap ＋ to add one.</p>`;
 }
 function modesOf(g) { return g.myModes?.length ? g.myModes : (g.steam?.modes || []); }
 function card(g) {
   const s = g.steam, k = gkind(g);
-  return `<article class="card" data-id="${g.id}">
+  return `<article class="card${g.fav ? ' fav' : ''}" data-id="${g.id}">
+    <button class="star${g.fav ? ' on' : ''}" data-star="${g.id}" aria-label="Favorite">${g.fav ? '★' : '☆'}</button>
     ${s?.img ? `<img src="${esc(s.img)}" loading="lazy" alt="">` : `<div class="noimg">${esc(g.name[0] || '?')}</div>`}
     <div class="info">
       <h3>${esc(g.name)}</h3>
@@ -200,7 +201,7 @@ function renderTabs() {
     `<button data-list="${k}" class="${settings.list === k ? 'on' : ''}">${t} <small>${counts[k] || 0}</small></button>`).join('');
 }
 function renderFilters() {
-  const chips = [...['soon', 'tba', 'ea', 'new', 'out', 'none'].map(k => [`s:${k}`, STATUS[k].t]), ['demo', 'Has demo'],
+  const chips = [...['soon', 'tba', 'ea', 'new', 'out', 'none'].map(k => [`s:${k}`, STATUS[k].t]), ['fav', '★ Favorites'], ['demo', 'Has demo'],
     ...MODES.slice(0, 6).map(m => [`m:${m}`, m])];
   $('#filters').innerHTML = chips.map(([v, t]) => `<button data-f="${v}" class="${settings.filters.includes(v) ? 'on' : ''}">${t}</button>`).join('');
 }
@@ -227,7 +228,7 @@ function showGame(id) {
   const s = g.steam, k = gkind(g);
   openSheet(`
     ${s?.img ? `<img class="hero" src="${esc(s.img)}" alt="">` : ''}
-    <h2>${esc(g.name)}</h2>
+    <h2><button class="star big${g.fav ? ' on' : ''}" data-star="${g.id}" aria-label="Favorite">${g.fav ? '★' : '☆'}</button>${esc(g.name)}</h2>
     <div class="row"><span class="st ${STATUS[k].c}">${esc(g.appid ? label(s) : STATUS.none.t)}</span>
       ${s?.price ? `<span class="price">${s.disc ? `<s>${esc(s.orig)}</s> ` : ''}${esc(s.price)}</span>` : ''}</div>
     ${s?.reviews ? `<p class="muted">${esc(s.reviews)}${s.dev ? ' · ' + esc(s.dev) : ''}</p>` : ''}
@@ -446,6 +447,8 @@ function showSettings() {
     <div class="btns"><button id="sImp">Import URL</button><button id="sExp">Export / backup</button></div>
     <textarea id="sJson" rows="3" placeholder="…or paste exported JSON here"></textarea>
     <div class="btns"><button id="sPaste">Import pasted JSON</button></div>
+    <h3>Favorites</h3>
+    <label class="tgl"><input type="checkbox" id="sFavTop" ${settings.favTop !== false ? 'checked' : ''}> Always show favorites at the top of each list</label>
     <h3>Data</h3>
     <div class="btns"><button id="sForce">Re-fetch all from Steam</button></div>
     <p class="muted">Web app auto-updates. Shell v${NATIVE && window.WTP.shellVersion ? window.WTP.shellVersion() : '-'} · ${live().length} games ·
@@ -460,6 +463,7 @@ function showSettings() {
   };
   $('#sForce').onclick = () => { closeSheet(); refresh(true); };
   $('#sManage').onclick = () => showManage();
+  $('#sFavTop').onchange = e => { settings.favTop = e.target.checked; saveSettings(); render(); };
   $('#wSync').onclick = async () => {
     const input = $('#wId').value.trim(); if (!input) return toast('Enter your Steam profile');
     $('#wStat').textContent = 'Connecting…';
@@ -540,6 +544,7 @@ function dedupe() {
       if (!keep.myModes?.length && d.myModes?.length) keep.myModes = d.myModes;
       if (!keep.steam && d.steam) keep.steam = d.steam;
       if (!keep.patch && d.patch) keep.patch = d.patch;
+      if (d.fav) keep.fav = true;
       Object.keys(d).forEach(k => k !== 'id' && k !== 'appid' && delete d[k]); d.deleted = true; touch(d); n++;
     }
     touch(keep);
@@ -675,6 +680,14 @@ document.addEventListener('click', e => {
   const tab = t.closest('[data-list]'); if (tab) { settings.list = tab.dataset.list; saveSettings(); return render(); }
   const f = t.closest('#filters [data-f]');
   if (f) { const v = f.dataset.f; settings.filters = settings.filters.includes(v) ? settings.filters.filter(x => x !== v) : [...settings.filters, v]; saveSettings(); return render(); }
+  const star = t.closest('[data-star]');
+  if (star) {
+    const g = db.games.find(x => x.id === star.dataset.star); if (!g) return;
+    if (g.fav) delete g.fav; else g.fav = true;
+    touch(g); save(); render();
+    document.querySelectorAll(`[data-star="${g.id}"]`).forEach(b => { b.classList.toggle('on', !!g.fav); b.textContent = g.fav ? '★' : '☆'; });
+    return toast(g.fav ? `★ ${g.name} added to favorites` : `Removed ${g.name} from favorites`);
+  }
   const c = t.closest('#list .card, #banner .chg'); if (c) return showGame(c.dataset.id);
 });
 $('#q').oninput = render;
