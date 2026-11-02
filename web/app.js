@@ -210,11 +210,13 @@ function renderFilters() {
     ...MODES.slice(0, 6).map(m => [`m:${m}`, m])];
   $('#filters').innerHTML = chips.map(([v, t]) => `<button data-f="${v}" class="${settings.filters.includes(v) ? 'on' : ''}">${t}</button>`).join('');
 }
+let changesOpen = false; // survives re-renders (background refreshes redraw the banner)
+document.addEventListener('toggle', e => { if (e.target.matches?.('#banner details.changes')) changesOpen = e.target.open; }, true);
 function renderBanner() {
   const recent = tracked().filter(g => g.change && Date.now() - g.change.at < 14 * DAY).sort((a, b) => b.change.at - a.change.at);
   let h = '';
   if (shellUpdate) h += `<div class="upd" id="updBox">App update v${shellUpdate.v} available. <button class="updbtn" data-apk="${esc(shellUpdate.url)}">${updState || 'Update'}</button></div>`;
-  if (recent.length) h += `<details class="changes"><summary>🔔 ${recent.length} status change(s) in the last 2 weeks</summary>${recent.map(g =>
+  if (recent.length) h += `<details class="changes" ${changesOpen ? 'open' : ''}><summary>🔔 ${recent.length} status change(s) in the last 2 weeks</summary>${recent.map(g =>
     `<div data-id="${g.id}" class="chg"><b>${esc(g.name)}</b>: ${esc(g.change.from)} → <b>${esc(g.change.to)}</b> <small>${rel(g.change.at)}</small></div>`).join('')}</details>`;
   $('#banner').innerHTML = h;
 }
