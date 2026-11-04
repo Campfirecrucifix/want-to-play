@@ -100,3 +100,7 @@ h3 { margin:0 0 3px; font-size:15px; }
 .star.big { font-size:24px; padding:0 8px 0 0; vertical-align:-2px; }
 .tgl { display:flex; align-items:center; gap:8px; font-size:14px; margin:6px 0; }
 .tgl input { width:18px; height:18px; flex:none; }
+.chg { display:flex; align-items:center; gap:8px; justify-content:space-between; }
+.chg .x { flex:none; background:none; border:0; color:#8f98a0; font-size:15px; padding:4px 8px; cursor:pointer; }
+.changes summary small { color:#8f98a0; font-weight:normal; }
+.changes .btns { margin:6px 0 2px; }

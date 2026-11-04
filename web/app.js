@@ -213,11 +213,13 @@ function renderFilters() {
 let changesOpen = false; // survives re-renders (background refreshes redraw the banner)
 document.addEventListener('toggle', e => { if (e.target.matches?.('#banner details.changes')) changesOpen = e.target.open; }, true);
 function renderBanner() {
-  const recent = tracked().filter(g => g.change && Date.now() - g.change.at < 14 * DAY).sort((a, b) => b.change.at - a.change.at);
+  const days = settings.changeDays || 14;
+  const recent = tracked().filter(g => g.change && !g.change.dismissed && Date.now() - g.change.at < days * DAY).sort((a, b) => b.change.at - a.change.at);
   let h = '';
   if (shellUpdate) h += `<div class="upd" id="updBox">App update v${shellUpdate.v} available. <button class="updbtn" data-apk="${esc(shellUpdate.url)}">${updState || 'Update'}</button></div>`;
-  if (recent.length) h += `<details class="changes" ${changesOpen ? 'open' : ''}><summary>🔔 ${recent.length} status change(s) in the last 2 weeks</summary>${recent.map(g =>
-    `<div data-id="${g.id}" class="chg"><b>${esc(g.name)}</b>: ${esc(g.change.from)} → <b>${esc(g.change.to)}</b> <small>${rel(g.change.at)}</small></div>`).join('')}</details>`;
+  if (recent.length) h += `<details class="changes" ${changesOpen ? 'open' : ''}><summary>🔔 ${recent.length} status change(s) <small>(clears after ${days} days)</small></summary>${recent.map(g =>
+    `<div data-id="${g.id}" class="chg"><span><b>${esc(g.name)}</b>: ${esc(g.change.from)} → <b>${esc(g.change.to)}</b> <small>${rel(g.change.at)}</small></span><button class="x" data-dismiss="${g.id}" aria-label="Clear">✕</button></div>`).join('')}
+    <div class="btns"><button data-dismiss="all">Clear all</button></div></details>`;
   $('#banner').innerHTML = h;
 }
 
@@ -454,6 +456,9 @@ function showSettings() {
     <div class="btns"><button id="sImp">Import URL</button><button id="sExp">Export / backup</button></div>
     <textarea id="sJson" rows="3" placeholder="…or paste exported JSON here"></textarea>
     <div class="btns"><button id="sPaste">Import pasted JSON</button></div>
+    <h3>Notifications</h3>
+    <label>Clear status-change notifications after</label>
+    <select id="sDays">${[3, 7, 14, 30, 60].map(d => `<option value="${d}" ${(settings.changeDays || 14) === d ? 'selected' : ''}>${d} days</option>`).join('')}</select>
     <h3>Favorites</h3>
     <label class="tgl"><input type="checkbox" id="sFavTop" ${settings.favTop !== false ? 'checked' : ''}> Always show favorites at the top of each list</label>
     <h3>Data</h3>
@@ -470,6 +475,7 @@ function showSettings() {
   };
   $('#sForce').onclick = () => { closeSheet(); refresh(true); };
   $('#sManage').onclick = () => showManage();
+  $('#sDays').onchange = e => { settings.changeDays = +e.target.value; saveSettings(); render(); };
   $('#sFavTop').onchange = e => { settings.favTop = e.target.checked; saveSettings(); render(); };
   $('#wSync').onclick = async () => {
     const input = $('#wId').value.trim(); if (!input) return toast('Enter your Steam profile');
@@ -694,6 +700,12 @@ document.addEventListener('click', e => {
     touch(g); save(); render();
     document.querySelectorAll(`[data-star="${g.id}"]`).forEach(b => { b.classList.toggle('on', !!g.fav); b.textContent = g.fav ? '★' : '☆'; });
     return toast(g.fav ? `★ ${g.name} added to favorites` : `Removed ${g.name} from favorites`);
+  }
+  const dis = t.closest('[data-dismiss]');
+  if (dis) {
+    const ids = dis.dataset.dismiss === 'all' ? [...document.querySelectorAll('#banner .chg')].map(x => x.dataset.id) : [dis.dataset.dismiss];
+    for (const id of ids) { const g = db.games.find(x => x.id === id); if (g?.change) { g.change.dismissed = true; touch(g); } }
+    save(); return renderBanner();
   }
   const c = t.closest('#list .card, #banner .chg'); if (c) return showGame(c.dataset.id);
 });
